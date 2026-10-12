@@ -1,0 +1,53 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html 
+# ---- Secrets / env ----
+.env
+.env.*
+!.env.example
+!**/env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ---- Databases / local data ----
+*.db
+*.sqlite
+*.sqlite3
+ShopAssist-Chatbot/shop.db
+
+# ---- Logs / runtime ----
+*.log
+logs/
+.cache/
+
+# ---- IDE / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Test / coverage ----
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Local tooling ----
+.ngrok/
+*.pem
+*.key
+credentials.json
+service-account*.json
