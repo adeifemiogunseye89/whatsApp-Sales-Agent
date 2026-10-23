@@ -1,10 +1,11 @@
 """LangGraph ReAct agent on local Ollama (Update 1: multi-branch).
 
 Defenses for weak local models:
-1. Leak catcher: if the model prints a tool call as text, execute the real
-   tool ourselves and feed the result back.
-2. Fake-order guard: if the model claims an order was placed (order id /
-   pickup code) without create_order actually running, force a re-try.
+1. Leak catcher: model prints a tool call as text -> we execute it ourselves.
+2. Fake-order guard: model claims an order without create_order -> re-try.
+3. GROUND-TRUTH FILTER: no reply containing an order ID / pickup code is
+   shown to the customer unless that order REALLY exists in the database
+   for this phone number. Fabrication becomes physically impossible.
 """
 import json
 import re
@@ -14,6 +15,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
+from app import db as _db
 from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
 from app.session import append_message, get_session
 from app.tools import ALL_TOOLS, set_context
@@ -36,12 +38,13 @@ LOCATION FIRST (the golden rule):
 
 BRANCH RULES:
 - You can only see the confirmed branch's shelf. All prices and stock you mention come from THAT branch only. Never mix branches.
-- If the locked branch is out of something, say so and offer to check another branch in that city.
+- If the locked branch is out of something, say so and offer to check another branch in that city (set_pickup_location with the same city again proposes the next branch, or ask which one they want).
 
-PAYMENT & ORDERS:
+ORDERS & TRACKING:
 - We do PAY-ON-PICKUP only. You never collect money in the chat.
 - create_order RESERVES the order and RETURNS the order ID and pickup code.
-- CRITICAL: you can NEVER know an order ID or pickup code except from create_order's return. Never invent, guess, or reuse codes from examples. If the customer asks for order status without an order existing, say you found none and offer to create one.
+- You can NEVER know an order ID or pickup code except from create_order's return. Never invent one.
+- track_order works WITHOUT any location — call it directly whenever the customer asks about their order(s). If it returns nothing, honestly say no orders were found and offer to create one.
 
 STRICT RULES:
 1. NEVER invent product names, IDs, prices or stock numbers. If tools return nothing, say so.
@@ -83,6 +86,7 @@ agent = create_react_agent(_llm, ALL_TOOLS, prompt=SYSTEM_PROMPT)
 _TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
 _FAKE_ORDER_RE = re.compile(r"pickup code|ORD-[A-Z0-9]|order (placed|reserved)", re.I)
+_ORDER_CLAIM_RE = re.compile(r"ORD-[A-Z0-9]+|pickup code", re.I)
 
 
 def _extract_leaked_tool_call(text: str):
@@ -102,8 +106,21 @@ def _extract_leaked_tool_call(text: str):
     return None
 
 
+def _claims_match_database(phone: str, reply: str) -> bool:
+    """GROUND TRUTH: if the reply mentions an order ID / pickup code, that
+    order must really exist for this phone in the database."""
+    if not _ORDER_CLAIM_RE.search(reply):
+        return True  # no order claims -> fine
+    orders = _db.orders_for_phone(phone)
+    for o in orders:
+        if o["order_id"] in reply or str(o["pickup_code"]) in reply:
+            return True
+    return False
+
+
 def run_agent(phone: str, text: str) -> str:
-    """One customer turn, with leak repair + fake-order guard (max 4 repairs)."""
+    """One customer turn. Leak repair + fake-order guard + ground-truth
+    filter. A reply only leaves this function if reality agrees with it."""
     set_context(phone)
     session = get_session(phone)
     append_message(session, "user", text)
@@ -127,8 +144,9 @@ def run_agent(phone: str, text: str) -> str:
         fake_order = (not leak and "create_order" not in tools_called
                       and "track_order" not in tools_called
                       and bool(_FAKE_ORDER_RE.search(reply)))
+        db_mismatch = not _claims_match_database(phone, reply)
 
-        if leak is None and not fake_order:
+        if leak is None and not fake_order and not db_mismatch:
             session.messages = list(msgs)
             return reply.strip() or "[no reply]"
 
@@ -149,6 +167,19 @@ def run_agent(phone: str, text: str) -> str:
                 except Exception as e:
                     outcome = f"TOOL ERROR: {e}"
             msgs = msgs + [ToolMessage(content=outcome, tool_call_id=call_id)]
+        elif db_mismatch:
+            # --- ground truth says the claimed order does NOT exist ---
+            msgs = list(msgs) + [
+                AIMessage(content=reply),
+                {"role": "user", "content":
+                 "SYSTEM NOTICE: REALITY CHECK FAILED. You mentioned an order "
+                 "ID or pickup code, but NO such order exists in the database "
+                 "for this customer. NEVER mention order IDs or codes except "
+                 "what create_order or track_order actually returned. If the "
+                 "customer wants an order, get confirmation and call "
+                 "create_order. If they asked about status, call track_order "
+                 "and report exactly what it returns (including 'none found')."},
+            ]
         else:
             # --- fake order: scold and force a real tool call ---
             msgs = list(msgs) + [
@@ -162,8 +193,11 @@ def run_agent(phone: str, text: str) -> str:
             ]
         # loop: model continues with the tool result or the correction
 
+    # emergency exit: NEVER hand over an unverified order claim
     session.messages = list(msgs)
     for m in reversed(msgs):
-        if isinstance(m, AIMessage) and isinstance(m.content, str) and m.content.strip():
+        if isinstance(m, AIMessage) and isinstance(m.content, str) \
+                and m.content.strip() and not _ORDER_CLAIM_RE.search(m.content):
             return m.content
-    return "Sorry, I had trouble with that. Could you repeat it?"
+    return ("Sorry, I couldn't complete that just now. Let me connect you "
+            "to a human agent — please hold on.")
