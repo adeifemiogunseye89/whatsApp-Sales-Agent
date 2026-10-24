@@ -30,7 +30,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 # ---- Business ----
 DATABASE_PATH = os.getenv("DATABASE_PATH", "shop.db")
-TAX_RATE = float(os.getenv("TAX_RATE", "0.075"))
-DELIVERY_FEE = float(os.getenv("DELIVERY_FEE", "2.00"))
+TAX_RATE = float(os.getenv("TAX_RATE", "0"))
+DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))
+RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "5"))
 HUMAN_ESCALATION_WEBHOOK = os.getenv("HUMAN_ESCALATION_WEBHOOK", "")
-CURRENCY = os.getenv("CURRENCY", "$")
+CURRENCY = os.getenv("CURRENCY", "NGN")

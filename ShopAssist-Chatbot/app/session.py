@@ -14,6 +14,8 @@ class Session:
     cart: dict = field(default_factory=dict)       # product_id -> qty
     last_order_key: str | None = None
     handoff: bool = False
+    branch_id: str | None = None            # CONFIRMED branch
+proposed_branch_id: str | None = None   # offered, waiting for yes/no
 
 
 _store: dict[str, Session] = {}

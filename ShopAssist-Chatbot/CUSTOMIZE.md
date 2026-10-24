@@ -8,13 +8,14 @@ Six injection points, in the order you'll touch them:
 | `OLLAMA_MODEL`, `OLLAMA_BASE_URL` | Always. `ollama pull llama3.1:8b` first. |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | Only for live WhatsApp. Empty = dev mode (replies print to console). |
 | `WHATSAPP_VERIFY_TOKEN` | Any secret you choose; must match Meta dashboard. |
-| `TAX_RATE`, `DELIVERY_FEE`, `CURRENCY` | Your business rules. |
+| `TAX_RATE`, `DELIVERY_FEE`, `CURRENCY` | Your business rules. |Money is integer KOBO.
 
 ## 2. Your product catalog — `app/db.py` -> `SEED_PRODUCTS`
-Replace the 6 demo rows with your real products:
+catalogue now lives in SEED_BRANCHES, SEED_PRODUCTS and SEED_INVENTORY in app/db.py
+(Replace the 6 demo rows with your real products:
 `("P-1001", "Name", "Description", unit_price, stock_qty, "Category")`
 Delete `shop.db` (or set a fresh `DATABASE_PATH`) after changing, or load
-from your real DB by replacing `init_db()` with an import script.
+from your real DB by replacing `init_db()` with an import script.)
 
 ## 3. Agent persona + rules — `app/agent.py` -> `SYSTEM_PROMPT`
 Change the store name, tone, currency notes, and the STRICT RULES section.
