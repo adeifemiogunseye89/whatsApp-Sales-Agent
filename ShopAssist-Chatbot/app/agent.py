@@ -2,7 +2,8 @@
 
 Defenses for weak local models:
 1. Leak catcher: model prints a tool call as text -> we execute it ourselves.
-2. Fake-order guard: model claims an order without create_order -> re-try.
+2. Fake-order guard: model claims an order it never looked up -> re-try.
+   (Stage 3: the model cannot place orders at all; orders.py does, after YES.)
 3. GROUND-TRUTH FILTER: no reply containing an order ID / pickup code is
    shown to the customer unless that order REALLY exists in the database
    for this phone number. Fabrication becomes physically impossible.
@@ -16,8 +17,10 @@ from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
 from app import db as _db
+from app import orders
 from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
 from app.session import append_message, get_session
+from app.textfmt import to_whatsapp
 from app.tools import ALL_TOOLS, set_context
 
 SYSTEM_PROMPT = """You are "ShopAssist", the WhatsApp customer service agent for a grocery store with MANY branches in different cities.
@@ -42,15 +45,16 @@ BRANCH RULES:
 
 ORDERS & TRACKING:
 - We do PAY-ON-PICKUP only. You never collect money in the chat.
-- create_order RESERVES the order and RETURNS the order ID and pickup code.
-- You can NEVER know an order ID or pickup code except from create_order's return. Never invent one.
-- track_order works WITHOUT any location — call it directly whenever the customer asks about their order(s). If it returns nothing, honestly say no orders were found and offer to create one.
+- To price a basket, call get_price_quote with the exact items and quantities. The SYSTEM then shows the customer an itemised quote and places the order itself when they reply YES. You cannot place orders.
+- After get_price_quote, add nothing about the quote: the system has already shown it.
+- You can NEVER know an order ID or pickup code except from track_order. Never invent one.
+- track_order works WITHOUT any location — call it directly whenever the customer asks about their order(s). If it returns nothing, honestly say no orders were found and offer to price what they want.
 
 STRICT RULES:
 1. NEVER invent product names, IDs, prices or stock numbers. If tools return nothing, say so.
 2. NEVER calculate prices yourself — always use get_price_quote.
-3. NEVER use create_order until the customer explicitly confirmed the exact items and total. Before that, restate the basket and total and ask: "Should I place this order?"
-4. Currency uses two decimals.
+3. NEVER say an order is placed, reserved or confirmed. Only the system places orders, after the customer replies YES to its quote.
+4. Copy prices exactly as the tools give them.
 5. If a tool result contains an error, read it carefully, fix your next call, and tell the customer politely what happened.
 
 EXAMPLE CONVERSATION:
@@ -69,10 +73,7 @@ Customer: do you have basmati rice?
 Assistant: - P-1001: Royal Basmati Rice 5kg (price) (6 in stock)
 
 Customer: take one, how much?
-Assistant: ... TOTAL (pay at pickup): ... Should I place this order?
-
-Customer: yes go ahead
-Assistant: (use create_order now — your reply must only say what the tool returns)"""
+Assistant: (call get_price_quote with P-1001 x 1; the system shows the quote and asks YES/NO)"""
 
 # qwen3 "thinks out loud" by default which breaks tool calling -> switch that
 # off ONLY for qwen3 models. Other models don't understand this option.
@@ -117,9 +118,27 @@ def _claims_match_database(phone: str, reply: str) -> bool:
             return True
     return False
 
+
+def _with_final_reply(msgs: list, text: str) -> list:
+    """Replace the model's closing message with the code-written one, so chat
+    history records what the customer was actually shown."""
+    msgs = list(msgs)
+    last = msgs[-1]
+    if isinstance(last, AIMessage) and not last.tool_calls:
+        msgs[-1] = AIMessage(content=text)
+    else:
+        msgs.append(AIMessage(content=text))
+    return msgs
+
+
 def run_agent(phone: str, text: str) -> str | None:
-    """One customer turn. Leak repair + fake-order guard + ground-truth
-    filter. A reply only leaves this function if reality agrees with it."""
+    """One customer turn. Order of authority:
+      1. handoff active        -> stay silent
+      2. clean YES/NO to quote -> CODE answers (orders.py), model not involved
+      3. model turn            -> if a tool wrote a reply (outbox), that text is
+                                  shown verbatim instead of the model's wording
+      4. otherwise             -> leak repair + fake-order guard + ground-truth
+                                  filter; a reply only leaves if reality agrees."""
     set_context(phone)
     session = get_session(phone)
     if session.handoff_active:
@@ -127,7 +146,17 @@ def run_agent(phone: str, text: str) -> str | None:
         append_message(session, "user", text)
         session.save()
         return None
+    session.take_outbox()                      # clear anything left from a failed turn
     append_message(session, "user", text)
+
+    if session.quote_awaiting_reply():
+        decision = orders.parse_confirmation(text)
+        if decision:
+            reply = (orders.confirm_pending(session) if decision == "yes"
+                     else orders.cancel_pending(session))
+            append_message(session, "assistant", reply)
+            session.save()
+            return reply
 
     history = list(session.messages)   # ends with the customer's new message
     # Show the model the system's state, right before the customer's message.
@@ -142,20 +171,23 @@ def run_agent(phone: str, text: str) -> str | None:
             for tc in getattr(m, "tool_calls", None) or []:
                 tools_called.add(tc["name"])
 
+        code_reply = session.take_outbox()
+        if code_reply:                         # a tool wrote the customer's message
+            session.set_history(_with_final_reply(msgs, code_reply))
+            return code_reply
+
         last = msgs[-1]
         reply = last.content if hasattr(last, "content") else str(last)
         reply = reply if isinstance(reply, str) else str(reply)
 
         leak = _extract_leaked_tool_call(reply)
-        fake_order = (not leak and "create_order" not in tools_called
-                      and "track_order" not in tools_called
+        fake_order = (not leak and "track_order" not in tools_called
                       and bool(_FAKE_ORDER_RE.search(reply)))
         db_mismatch = not _claims_match_database(phone, reply)
 
         if leak is None and not fake_order and not db_mismatch:
             session.set_history(msgs)
-            return reply.strip() or "[no reply]"
-
+            return to_whatsapp(reply.strip() or "[no reply]")
         if leak is not None:
             # --- leak: become the model's hands and run the tool ---
             name, args = leak
@@ -181,10 +213,10 @@ def run_agent(phone: str, text: str) -> str | None:
                  "SYSTEM NOTICE: REALITY CHECK FAILED. You mentioned an order "
                  "ID or pickup code, but NO such order exists in the database "
                  "for this customer. NEVER mention order IDs or codes except "
-                 "what create_order or track_order actually returned. If the "
-                 "customer wants an order, get confirmation and call "
-                 "create_order. If they asked about status, call track_order "
-                 "and report exactly what it returns (including 'none found')."},
+                 "what track_order actually returned. You cannot place orders: "
+                 "if the customer wants to buy, call get_price_quote. If they "
+                 "asked about status, call track_order and report exactly what "
+                 "it returns (including 'none found')."},
             ]
         else:
             # --- fake order: scold and force a real tool call ---
@@ -192,10 +224,10 @@ def run_agent(phone: str, text: str) -> str | None:
                 AIMessage(content=reply),
                 {"role": "user", "content":
                  "SYSTEM NOTICE: You described an order (ID/pickup code), but "
-                 "create_order was NEVER called, so NO order exists. You cannot "
-                 "know any order ID or code without calling create_order. If the "
-                 "customer confirmed, call create_order NOW and only report what "
-                 "it returns. If nothing was confirmed, ask what they'd like."},
+                 "you cannot place orders, so NO order exists. Only the system "
+                 "places orders, after the customer replies YES to its quote. "
+                 "If the customer wants to buy, call get_price_quote. If they "
+                 "asked about an existing order, call track_order."},
             ]
         # loop: model continues with the tool result or the correction
 
@@ -204,6 +236,6 @@ def run_agent(phone: str, text: str) -> str | None:
     for m in reversed(msgs):
         if isinstance(m, AIMessage) and isinstance(m.content, str) \
                 and m.content.strip() and not _ORDER_CLAIM_RE.search(m.content):
-            return m.content
+            return to_whatsapp(m.content)
     return ("Sorry, I couldn't complete that just now. Let me connect you "
             "to a human agent — please hold on.")

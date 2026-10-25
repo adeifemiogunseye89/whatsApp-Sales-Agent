@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _TMP = tempfile.mkdtemp()
 os.environ["DATABASE_PATH"] = os.path.join(_TMP, "test_shop.db")
 
-from app import db, tools                      # noqa: E402
+from app import db, orders, tools              # noqa: E402
 from app.session import clear, get_session     # noqa: E402
 
 db.init_db()
@@ -123,8 +123,7 @@ def test_n4_tools_refuse_without_branch():
     cart = [tools.CartItem(product_id="P-1001", quantity=1)]
     for fn, args in [(tools.search_products, {"keyword": "rice"}),
                      (tools.check_inventory, {"product_id": "P-1001"}),
-                     (tools.get_price_quote, {"items": cart}),
-                     (tools.create_order, {"items": cart})]:
+                     (tools.get_price_quote, {"items": cart})]:   # create_order no longer a tool (Stage 3)
         assert call(fn, p, **args).startswith("NO_BRANCH")
 
 
@@ -157,15 +156,17 @@ def test_n4_switching_branch_changes_prices():
 
 # ---- N3+N4 end-to-end through the tools the LLM will call ----
 def test_end_to_end_order_and_tracking():
+    # Stage 3: the model PREPARES a quote; code shows it and places the order.
     p = "2348000000014"; clear(p)
     lock_branch(p, "Abuja")
     cart = [tools.CartItem(product_id="P-1002", quantity=2)]
-    quote = call(tools.get_price_quote, p, items=cart)
-    assert "Wuse Branch" in quote and "₦10,000" in quote and "pay at pickup" in quote
-    assert "Fee" not in quote and "Tax" not in quote
-    placed = call(tools.create_order, p, items=cart)
-    m = re.search(r"Order (ORD-[A-Z0-9]+) reserved at Wuse Branch\. Pickup code: ([A-Z0-9]{6})", placed)
-    assert m, placed
+    assert "QUOTE PREPARED" in call(tools.get_price_quote, p, items=cart)
+    shown = get_session(p).outbox                      # what the customer is shown
+    assert "Wuse Branch" in shown and "₦10,000" in shown and "pay at pickup" in shown
+    assert "Fee" not in shown and "Tax" not in shown
+    placed = orders.confirm_pending(get_session(p))
+    m = re.search(r"Order ID: \*(ORD-[A-Z0-9]+)\*\nPickup code: \*([A-Z0-9]{6})\*", placed)
+    assert m and "Order reserved at Wuse Branch" in placed, placed
     tracked = call(tools.track_order, p)
     assert m.group(1) in tracked and m.group(2) in tracked and "RESERVED" in tracked
     # another customer must not see it

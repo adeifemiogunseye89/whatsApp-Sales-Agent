@@ -45,6 +45,7 @@ def main():
         print(f"Bot: {reply}\n")
         st = get_session(PHONE)   # dev-only: the truth, next to what the model said
         print(f"      [state: branch={st.branch_id} proposed={st.proposed_branch_id} "
+              f"quote={st.pending_quote['id'] if st.pending_quote else None} "
               f"handoff={st.handoff_active}]\n")
 
 

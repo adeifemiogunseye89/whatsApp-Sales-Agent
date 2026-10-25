@@ -30,11 +30,15 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 # ---- Business ----
 DATABASE_PATH = os.getenv("DATABASE_PATH", "shop.db")
+# Money is handled in KOBO (integer, 100 kobo = 1 naira) everywhere in the code.
+# TAX_RATE defaults to 0 because shelf prices are treated as VAT-inclusive.
+# Confirm the correct VAT treatment of your products with your accountant.
 TAX_RATE = float(os.getenv("TAX_RATE", "0"))
-DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))
-RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "5"))
-HUMAN_ESCALATION_WEBHOOK = os.getenv("HUMAN_ESCALATION_WEBHOOK", "")
-CURRENCY = os.getenv("CURRENCY", "NGN")
+DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))   # pickup-only = 0
+RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "4"))   # how long we hold stock
+QUOTE_TTL_MINUTES = int(os.getenv("QUOTE_TTL_MINUTES", "10"))  # how long a quote can be confirmed
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))  # idle time before a chat is forgotten
 HANDOFF_HOURS = int(os.getenv("HANDOFF_HOURS", "4"))           # bot stays silent this long after escalation
 HISTORY_CAP = int(os.getenv("HISTORY_CAP", "20"))              # max chat messages kept / sent to the model
+HUMAN_ESCALATION_WEBHOOK = os.getenv("HUMAN_ESCALATION_WEBHOOK", "")
+CURRENCY = os.getenv("CURRENCY", "₦")

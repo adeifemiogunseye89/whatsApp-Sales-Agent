@@ -6,23 +6,22 @@ so tools stay pure and testable.
 
 Stage 1: every shelf tool is scoped to the customer's CONFIRMED branch, which
 lives in the Session (code-owned state), not in the model's chat memory.
+
+Stage 3: the model can only PREPARE a quote (get_price_quote). It cannot place
+an order; app/orders.py does that after the customer answers YES.
 """
 import contextvars
-import hashlib
-from datetime import datetime, timedelta, timezone
 
 import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app import db
-from app.config import CURRENCY, HUMAN_ESCALATION_WEBHOOK
+from app import db, orders
+from app.config import HUMAN_ESCALATION_WEBHOOK
 from app.session import get_session
+from app.textfmt import money as _money, wat as _wat   # shared formatting
 
 _phone_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("phone")
-
-_WAT = timezone(timedelta(hours=1))   # Nigeria: UTC+1, no daylight saving
-
 
 def set_context(phone: str):
     _phone_ctx.set(phone)
@@ -30,18 +29,6 @@ def set_context(phone: str):
 
 def _phone() -> str:
     return _phone_ctx.get("")
-
-
-def _money(kobo: int) -> str:
-    """12345600 -> '₦123,456'   |   1050 -> '₦10.50'   (integer math only)"""
-    naira, rem = divmod(kobo, 100)
-    return f"{CURRENCY}{naira:,}" + (f".{rem:02d}" if rem else "")
-
-
-def _wat(utc_text: str) -> str:
-    """DB stores UTC text; customers see Lagos time."""
-    dt = datetime.strptime(utc_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    return dt.astimezone(_WAT).strftime("%d %b %Y, %I:%M %p")
 
 
 NO_BRANCH_MSG = ("NO_BRANCH: no pickup branch is confirmed yet. Ask the customer "
@@ -174,58 +161,32 @@ def check_inventory(product_id: str) -> str:
 
 @tool
 def get_price_quote(items: list[CartItem]) -> str:
-    """Calculate the full price for a list of items at the confirmed branch:
-    subtotal, any tax/fees, and total. Always use this before discussing
-    prices with a customer."""
+    """Price a basket at the confirmed branch and PREPARE it for the customer.
+    Call this whenever the customer wants specific items/quantities priced or
+    says they want to buy or order. The SYSTEM then shows the customer an
+    itemised quote and places the order itself when they reply YES."""
     branch, err = _branch()
     if err:
         return err
+    merged: dict[str, int] = {}                      # same product listed twice -> one line
+    for it in items:
+        pid = it.product_id.strip().upper()
+        merged[pid] = merged.get(pid, 0) + it.quantity
+    if any(q > 99 for q in merged.values()):
+        return "Could not quote: the maximum is 99 of any one item."
+    items = [CartItem(product_id=p, quantity=q) for p, q in merged.items()]
     resolved, errors = _resolve(branch["branch_id"], items)
     if errors:
         return "Could not quote: " + " ".join(errors)
     if not resolved:
         return "No valid items to quote."
-    t = db.compute_totals(resolved)
-    lines = [f"{i['quantity']} x {i['item']['name']} — "
-             f"{_money(i['item']['price_kobo'] * i['quantity'])}" for i in resolved]
-    if t["tax"]:
-        lines.append(f"Tax: {_money(t['tax'])}")
-    if t["delivery"]:
-        lines.append(f"Fee: {_money(t['delivery'])}")
-    return (f"Quote for {branch['name']}:\n" + "\n".join(lines)
-            + f"\n*TOTAL (pay at pickup): {_money(t['total'])}*")
-
-
-@tool
-def create_order(items: list[CartItem]) -> str:
-    """PLACE AN ORDER (reserve for pickup) at the confirmed branch. STRICT RULE:
-    only call this after the customer has explicitly confirmed the exact items
-    and total. Returns the order ID and pickup code."""
-    branch, err = _branch()
-    if err:
-        return err
-    resolved, errors = _resolve(branch["branch_id"], items)
-    if errors:
-        return "Order failed: " + " ".join(errors)
-    phone = _phone()
-    # NOTE (known issue, fixed in Stage 3): key = phone+branch+basket means the
-    # same basket re-ordered later is treated as a retry. Needs a quote id.
-    raw = "|".join(sorted(f"{i['item']['product_id']}:{i['quantity']}" for i in resolved))
-    key = hashlib.sha256(f"{phone}|{branch['branch_id']}|{raw}".encode()).hexdigest()
-    session = get_session(phone)
-    if session.last_order_key == key:
-        return "This order was already placed. Check with track_order."
-    totals = db.compute_totals(resolved)
-    try:
-        order = db.create_order_db(key, branch["branch_id"], phone, resolved, totals)
-    except ValueError as e:
-        return f"Order failed: {e}"
-    session.record_order(key)
-    return (f"Order {order['order_id']} reserved at {branch['name']}. "
-            f"Pickup code: {order['pickup_code']}. "
-            f"Total to pay at pickup: {_money(order['total_kobo'])}. "
-            f"Held until {_wat(order['expires_at'])}. "
-            "Track it anytime with track_order.")
+    session = get_session(_phone())
+    quote = orders.build_quote(branch, resolved)
+    session.set_quote(quote)                         # saved: survives a restart
+    session.set_outbox(orders.quote_text(branch, quote))   # shown to the customer verbatim
+    return ("QUOTE PREPARED. The system is showing the customer the itemised quote "
+            "and will place the order itself when they reply YES. Do not repeat the "
+            "quote and do not say an order was placed.")
 
 
 @tool
@@ -274,6 +235,8 @@ def escalate_to_human(reason: str) -> str:
             "shortly. Thanks for your patience!")
 
 
+# NOTE (Stage 3): there is deliberately NO create_order tool. Orders are placed
+# by code (orders.confirm_pending) after the customer replies YES to a quote.
 ALL_TOOLS = [set_pickup_location, confirm_pickup_branch, search_products,
              get_product_details, check_inventory, get_price_quote,
-             create_order, track_order, escalate_to_human]
+             track_order, escalate_to_human]

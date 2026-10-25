@@ -22,6 +22,7 @@ from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
                                      messages_to_dict)
 
 from app import db
+from app.textfmt import money
 from app.config import HANDOFF_HOURS, HISTORY_CAP, SESSION_TTL_HOURS
 
 
@@ -42,6 +43,8 @@ class Session:
     handoff_until: float = 0.0                     # epoch seconds; 0 = no handoff
     branch_id: str | None = None                   # CONFIRMED pickup branch
     proposed_branch_id: str | None = None          # offered, waiting for yes/no
+    pending_quote: dict | None = None              # itemised quote awaiting the customer's YES/NO
+    outbox: str | None = field(default=None, repr=False)   # code-written reply for this turn (never saved)
     last_active: float = field(default_factory=lambda: _now())
 
     def __post_init__(self):
@@ -49,6 +52,8 @@ class Session:
         # branch (older versions allowed it). Nothing is waiting for a yes/no.
         if self.proposed_branch_id and self.proposed_branch_id == self.branch_id:
             self.proposed_branch_id = None
+        if self.pending_quote and self.pending_quote.get("branch_id") != self.branch_id:
+            self.pending_quote = None   # a quote only makes sense for the confirmed branch
 
     # ----- read helpers -----
     @property
@@ -76,6 +81,14 @@ class Session:
                          f"({proposed['address']}).")
             lines.append("  If they say yes or no, call confirm_pickup_branch "
                          "(accepted true/false) - do not ask the location question again.")
+        q = self.pending_quote
+        if q:
+            items = ", ".join(f"{i['quantity']} × {i['name']}" for i in q["items"])
+            lines.append(f"- A quote is waiting for the customer's YES/NO ({items}; total "
+                         f"{money(q['totals']['total'])}). The system already showed it to them "
+                         "and places the order itself when they reply YES.")
+            lines.append("  If they want changes, call get_price_quote again with the corrected "
+                         "items. You cannot place orders; never say an order is placed or reserved.")
         return SystemMessage(content="\n".join(lines), name=STATE_MSG_NAME)
 
     # ----- state changes: each one saves immediately -----
@@ -88,13 +101,39 @@ class Session:
     def lock_branch(self, branch_id: str) -> None:
         self.branch_id = branch_id
         self.proposed_branch_id = None
+        self.pending_quote = None   # a quote for the old branch is void
         self.cart.clear()          # a different branch means different prices/stock
         self.save()
 
     def record_order(self, order_key: str) -> None:
         self.last_order_key = order_key
+        self.pending_quote = None   # the quote has been turned into an order
         self.cart.clear()
         self.save()
+
+    # ----- quote + outbox (Stage 3) -----
+    def set_quote(self, quote: dict) -> None:
+        self.pending_quote = quote
+        self.save()
+
+    def clear_quote(self) -> None:
+        self.pending_quote = None
+        self.save()
+
+    def quote_expired(self) -> bool:
+        return bool(self.pending_quote) and _now() > self.pending_quote["expires_at"]
+
+    def quote_awaiting_reply(self) -> bool:
+        """True when a bare YES/NO should be read as the answer to the quote
+        (not when a branch yes/no is the open question)."""
+        return bool(self.pending_quote) and not self.proposed_branch_id
+
+    def set_outbox(self, text: str) -> None:
+        self.outbox = text   # transient: cleared every turn, never saved
+
+    def take_outbox(self) -> str | None:
+        text, self.outbox = self.outbox, None
+        return text
 
     def start_handoff(self, hours: float = HANDOFF_HOURS) -> None:
         self.handoff_until = _now() + hours * 3600
@@ -120,6 +159,7 @@ class Session:
             "handoff_until": self.handoff_until,
             "branch_id": self.branch_id,
             "proposed_branch_id": self.proposed_branch_id,
+            "pending_quote": self.pending_quote,
             "last_active": self.last_active,
         }, default=str)   # default=str: an odd metadata value must never crash a save
 
@@ -174,6 +214,7 @@ def _load(phone: str) -> Session:
                     handoff_until=d.get("handoff_until", 0.0),
                     branch_id=d.get("branch_id"),
                     proposed_branch_id=d.get("proposed_branch_id"),
+                    pending_quote=d.get("pending_quote"),
                     last_active=d.get("last_active", _now()),
                 )
         except Exception as e:   # corrupt row must never lock a customer out

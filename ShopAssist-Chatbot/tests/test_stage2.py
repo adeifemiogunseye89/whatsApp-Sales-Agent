@@ -74,13 +74,15 @@ def test_n1_pending_proposal_survives_restart():
 
 
 def test_n1_order_key_survives_restart():
+    # Stage 3: an order now comes from confirming a quote; its id is the key.
+    from app import orders
     p = "2348100000003"; S.clear(p)
     lock(p)
     cart = [tools.CartItem(product_id="P-1002", quantity=1)]
-    assert "reserved" in call(tools.create_order, p, items=cart)
+    call(tools.get_price_quote, p, items=cart)
+    assert "Order reserved" in orders.confirm_pending(S.get_session(p))
     restart()
     assert S.get_session(p).last_order_key is not None
-    assert "already placed" in call(tools.create_order, p, items=cart)
     assert "ORD-" in call(tools.track_order, p)
 
 
