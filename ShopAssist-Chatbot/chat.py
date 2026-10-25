@@ -36,6 +36,9 @@ def main():
         except Exception as e:
             print(f"Bot: [hiccup — {e}] Try rephrasing, or type 'reset'.\n")
             continue
+        if reply is None:
+            print("Bot: [a human agent has this chat - bot is silent]\n")
+            continue
         if not reply.strip():
             print("Bot: [thinking came back empty — please repeat that]\n")
             continue

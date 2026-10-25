@@ -88,7 +88,7 @@ def set_pickup_location(place: str) -> str:
     confirm; if several match, ask which one they want."""
     matches = db.find_branches(place)
     session = get_session(_phone())
-    session.proposed_branch_id = None
+    session.propose_branch(None)
     if not matches:
         return (f"No branch found for '{place}'. We currently serve: "
                 f"{', '.join(db.served_cities())}.")
@@ -97,10 +97,9 @@ def set_pickup_location(place: str) -> str:
         return ("Several branches match. Ask the customer which one, then call "
                 "set_pickup_location again with that branch name:\n" + lines)
     b = matches[0]
-    session.proposed_branch_id = b["branch_id"]
+    session.propose_branch(b["branch_id"])
     return (f"Proposed branch: *{b['name']}* — {b['address']}. "
             "Ask the customer to confirm (yes/no).")
-
 
 @tool
 def confirm_pickup_branch(accepted: bool) -> str:
@@ -110,13 +109,12 @@ def confirm_pickup_branch(accepted: bool) -> str:
     proposed = db.get_branch(session.proposed_branch_id) if session.proposed_branch_id else None
     if not proposed:
         return "No branch is waiting for confirmation. Call set_pickup_location first."
-    session.proposed_branch_id = None
     if not accepted:
+        session.propose_branch(None)
         return "Okay, not that one. Ask for another city, area or branch."
-    session.branch_id = proposed["branch_id"]
+    session.lock_branch(proposed["branch_id"])
     return (f"Pickup branch locked: *{proposed['name']}*. All prices and stock "
             "now come from this branch.")
-
 
 # ---------- shelf tools (all branch-scoped) ----------
 
@@ -213,14 +211,12 @@ def create_order(items: list[CartItem]) -> str:
         order = db.create_order_db(key, branch["branch_id"], phone, resolved, totals)
     except ValueError as e:
         return f"Order failed: {e}"
-    session.last_order_key = key
-    session.cart.clear()
+    session.record_order(key)
     return (f"Order {order['order_id']} reserved at {branch['name']}. "
             f"Pickup code: {order['pickup_code']}. "
             f"Total to pay at pickup: {_money(order['total_kobo'])}. "
             f"Held until {_wat(order['expires_at'])}. "
             "Track it anytime with track_order.")
-
 
 @tool
 def track_order(order_id: str = "") -> str:
@@ -239,20 +235,33 @@ def track_order(order_id: str = "") -> str:
         f"total {_money(r['total_kobo'])}, pickup code {r['pickup_code']}, "
         f"placed {_wat(r['created_at'])}" for r in rows)
 
-
 @tool
-async def escalate_to_human(reason: str) -> str:
+def escalate_to_human(reason: str) -> str:
     """Hand the conversation to a human agent (refunds, complaints, anything
     outside the bot's abilities). Call this rather than guessing."""
-    get_session(_phone()).handoff = True
+    phone = _phone()
+    session = get_session(phone)
+    payload = {
+        "phone": phone, "reason": reason, "branch_id": session.branch_id,
+        "recent_messages": [{"role": m.type, "content": m.content}
+                            for m in session.messages[-6:]
+                            if isinstance(getattr(m, "content", None), str)],
+    }
     if HUMAN_ESCALATION_WEBHOOK:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(HUMAN_ESCALATION_WEBHOOK,
-                              json={"phone": _phone(), "reason": reason})
+        try:
+            httpx.post(HUMAN_ESCALATION_WEBHOOK, json=payload, timeout=10).raise_for_status()
+        except Exception as e:
+            # Do NOT silence the bot if no human was notified: the customer
+            # would be left talking to nobody.
+            print(f"[escalation failed] {phone}: {e!r}")
+            return ("ESCALATION FAILED: the team could not be reached right now. "
+                    "Apologise, ask the customer to try again in a few minutes.")
+    else:
+        print(f"[escalation - no webhook configured (dev)] {payload}")
+    session.start_handoff()
     return ("I've passed you to a human agent — they'll join this chat "
             "shortly. Thanks for your patience!")
-
-
+            
 ALL_TOOLS = [set_pickup_location, confirm_pickup_branch, search_products,
              get_product_details, check_inventory, get_price_quote,
              create_order, track_order, escalate_to_human]

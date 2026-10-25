@@ -30,15 +30,16 @@ TOOLS:
 - You have tools. Call them when you need information or want to act. Replies must be plain customer-facing text only — NEVER JSON, NEVER code, NEVER {"name": ...}.
 
 LOCATION FIRST (the golden rule):
-- - Before any prices, stock checks, quotes or orders, a pickup branch must be CONFIRMED. The system tracks this itself: shelf tools reply NO_BRANCH if none is confirmed.
+- Before any prices, stock checks, quotes or orders, a pickup branch must be CONFIRMED. The system tracks this itself: shelf tools reply NO_BRANCH if none is confirmed.
 - If the customer wants prices, wants to buy or reserve, and no branch is confirmed, ask: "Which city or area will the pickup happen in?"
 - Call set_pickup_location with their answer. If it proposes ONE branch, show it and ask the customer to confirm (yes/no). If it lists several, ask which one they want, then call set_pickup_location again with that branch name.
 - When they answer yes/no, call confirm_pickup_branch (accepted true or false).
 - Once confirmed, do not ask again — unless the customer asks to switch branch; then call set_pickup_location again.
 
 BRANCH RULES:
--- All prices and stock you mention come from the CONFIRMED branch only. Never mix branches.
+- All prices and stock you mention come from the CONFIRMED branch only. Never mix branches.
 - If the confirmed branch is out of something, say so and offer to look at another branch (set_pickup_location with that branch name).
+
 ORDERS & TRACKING:
 - We do PAY-ON-PICKUP only. You never collect money in the chat.
 - create_order RESERVES the order and RETURNS the order ID and pickup code.
@@ -62,10 +63,10 @@ Assistant: (after set_pickup_location) Our branch in Abuja:
 Is this the right pickup branch? (yes/no)
 
 Customer: yes
-Assistant: Locked in: Wuse Branch. From now on I'll quote Wuse Branch prices and stock.
+Assistant: (after confirm_pickup_branch) Locked in: Wuse Branch. From now on I'll quote Wuse Branch prices and stock.
 
 Customer: do you have basmati rice?
-Assistant:-P-1001: Royal Basmati Rice 5kg (price) (6 in stock)
+Assistant: - P-1001: Royal Basmati Rice 5kg (price) (6 in stock)
 
 Customer: take one, how much?
 Assistant: ... TOTAL (pay at pickup): ... Should I place this order?
@@ -117,11 +118,16 @@ def _claims_match_database(phone: str, reply: str) -> bool:
     return False
 
 
-def run_agent(phone: str, text: str) -> str:
+def run_agent(phone: str, text: str) -> str | None:
     """One customer turn. Leak repair + fake-order guard + ground-truth
     filter. A reply only leaves this function if reality agrees with it."""
     set_context(phone)
     session = get_session(phone)
+    if session.handoff_active:
+        # A human owns this chat: record the message, stay silent.
+        append_message(session, "user", text)
+        session.save()
+        return None
     append_message(session, "user", text)
 
     msgs = list(session.messages)
@@ -146,7 +152,7 @@ def run_agent(phone: str, text: str) -> str:
         db_mismatch = not _claims_match_database(phone, reply)
 
         if leak is None and not fake_order and not db_mismatch:
-            session.messages = list(msgs)
+            session.set_history(msgs)
             return reply.strip() or "[no reply]"
 
         if leak is not None:
@@ -193,7 +199,7 @@ def run_agent(phone: str, text: str) -> str:
         # loop: model continues with the tool result or the correction
 
     # emergency exit: NEVER hand over an unverified order claim
-    session.messages = list(msgs)
+    session.set_history(msgs)
     for m in reversed(msgs):
         if isinstance(m, AIMessage) and isinstance(m.content, str) \
                 and m.content.strip() and not _ORDER_CLAIM_RE.search(m.content):

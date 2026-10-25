@@ -12,15 +12,15 @@ from fastapi.responses import PlainTextResponse
 from app.agent import run_agent
 from app.config import WHATSAPP_VERIFY_TOKEN
 from app.db import init_db
+from app.session import purge_expired
 from app.whatsapp import send_whatsapp
 
 app = FastAPI(title="ShopAssist Bot", docs_url=None, redoc_url=None)
 
-
 @app.on_event("startup")
 def startup() -> None:
     init_db()
-
+    purge_expired()   # forget chats idle past SESSION_TTL_HOURS
 
 # ---------- Meta webhook verification ----------
 
@@ -56,7 +56,6 @@ async def receive_webhook(request: Request):
         asyncio.create_task(_handle(phone, text))
     return {"status": "ok"}  # always ACK fast — Meta retries otherwise
 
-
 async def _handle(phone: str, text: str) -> None:
     try:
         reply = run_agent(phone, text)
@@ -64,4 +63,5 @@ async def _handle(phone: str, text: str) -> None:
         reply = ("Sorry, something went wrong on my side. "
                  "A human agent will follow up shortly.")
         print(f"[agent error] {phone}: {e!r}")
-    await send_whatsapp(phone, reply)
+    if reply:   # None = a human has this chat, bot stays silent
+        await send_whatsapp(phone, reply)

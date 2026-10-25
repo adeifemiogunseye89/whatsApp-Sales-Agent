@@ -35,3 +35,6 @@ DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))
 RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "5"))
 HUMAN_ESCALATION_WEBHOOK = os.getenv("HUMAN_ESCALATION_WEBHOOK", "")
 CURRENCY = os.getenv("CURRENCY", "NGN")
+SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))  # idle time before a chat is forgotten
+HANDOFF_HOURS = int(os.getenv("HANDOFF_HOURS", "4"))           # bot stays silent this long after escalation
+HISTORY_CAP = int(os.getenv("HISTORY_CAP", "20"))              # max chat messages kept / sent to the model

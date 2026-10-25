@@ -105,6 +105,11 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_branch_code
     ON orders(branch_id, pickup_code);
 CREATE INDEX IF NOT EXISTS ix_orders_phone ON orders(customer_phone, created_at);
+CREATE TABLE IF NOT EXISTS sessions (
+    phone      TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -278,3 +283,32 @@ def get_order_for_phone(order_id: str, phone: str) -> sqlite3.Row | None:
         _ORDER_SELECT + " WHERE o.order_id = ? AND o.customer_phone = ?",
         (order_id.strip().upper(), phone),
     ).fetchone()
+
+# ---------- session persistence (Stage 2) ----------
+def load_session_json(phone: str) -> str | None:
+    row = get_conn().execute(
+        "SELECT state_json FROM sessions WHERE phone = ?", (phone,)).fetchone()
+    return row["state_json"] if row else None
+
+
+def save_session_json(phone: str, state_json: str) -> None:
+    with get_conn() as conn:   # UPSERT: insert, or update if phone already exists
+        conn.execute(
+            """INSERT INTO sessions (phone, state_json) VALUES (?, ?)
+               ON CONFLICT(phone) DO UPDATE SET
+                   state_json = excluded.state_json,
+                   updated_at = datetime('now')""",
+            (phone, state_json))
+
+
+def delete_session_row(phone: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE phone = ?", (phone,))
+
+
+def purge_sessions_older_than(hours: int) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM sessions WHERE updated_at < datetime('now', ?)",
+            (f"-{hours} hours",))
+        return cur.rowcount
