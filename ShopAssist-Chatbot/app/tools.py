@@ -97,9 +97,15 @@ def set_pickup_location(place: str) -> str:
         return ("Several branches match. Ask the customer which one, then call "
                 "set_pickup_location again with that branch name:\n" + lines)
     b = matches[0]
+    if b["branch_id"] == session.branch_id:
+        return (f"*{b['name']}* is already the confirmed pickup branch. Tell the "
+                "customer so briefly, then carry on with what they asked.")
     session.propose_branch(b["branch_id"])
     return (f"Proposed branch: *{b['name']}* — {b['address']}. "
-            "Ask the customer to confirm (yes/no).")
+            f'Tell the customer exactly this, naming the branch and its address: '
+            f'"Your pickup branch would be *{b["name"]}* — {b["address"]}. '
+            f'Is that right? (yes/no)"')
+
 
 @tool
 def confirm_pickup_branch(accepted: bool) -> str:
@@ -114,7 +120,10 @@ def confirm_pickup_branch(accepted: bool) -> str:
         return "Okay, not that one. Ask for another city, area or branch."
     session.lock_branch(proposed["branch_id"])
     return (f"Pickup branch locked: *{proposed['name']}*. All prices and stock "
-            "now come from this branch.")
+            "now come from this branch. Briefly confirm it to the customer, then "
+            "carry on with what they originally asked (look up that product, "
+            "quote, etc.) - do not ask the location question again.")
+
 
 # ---------- shelf tools (all branch-scoped) ----------
 
@@ -218,6 +227,7 @@ def create_order(items: list[CartItem]) -> str:
             f"Held until {_wat(order['expires_at'])}. "
             "Track it anytime with track_order.")
 
+
 @tool
 def track_order(order_id: str = "") -> str:
     """Check the status of recent orders. Optionally filter by order ID;
@@ -234,6 +244,7 @@ def track_order(order_id: str = "") -> str:
         f"- {r['order_id']}: {r['status']} at {r['branch_name']}, "
         f"total {_money(r['total_kobo'])}, pickup code {r['pickup_code']}, "
         f"placed {_wat(r['created_at'])}" for r in rows)
+
 
 @tool
 def escalate_to_human(reason: str) -> str:
@@ -261,7 +272,8 @@ def escalate_to_human(reason: str) -> str:
     session.start_handoff()
     return ("I've passed you to a human agent — they'll join this chat "
             "shortly. Thanks for your patience!")
-            
+
+
 ALL_TOOLS = [set_pickup_location, confirm_pickup_branch, search_products,
              get_product_details, check_inventory, get_price_quote,
              create_order, track_order, escalate_to_human]

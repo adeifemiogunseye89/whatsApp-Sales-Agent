@@ -117,7 +117,6 @@ def _claims_match_database(phone: str, reply: str) -> bool:
             return True
     return False
 
-
 def run_agent(phone: str, text: str) -> str | None:
     """One customer turn. Leak repair + fake-order guard + ground-truth
     filter. A reply only leaves this function if reality agrees with it."""
@@ -130,7 +129,9 @@ def run_agent(phone: str, text: str) -> str | None:
         return None
     append_message(session, "user", text)
 
-    msgs = list(session.messages)
+    history = list(session.messages)   # ends with the customer's new message
+    # Show the model the system's state, right before the customer's message.
+    msgs = history[:-1] + [session.state_message()] + history[-1:]
     for _ in range(4):
         result = agent.invoke({"messages": msgs})
         new_msgs = result["messages"][len(msgs):]

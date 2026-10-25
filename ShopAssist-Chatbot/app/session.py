@@ -17,11 +17,15 @@ import json
 import time
 from dataclasses import dataclass, field
 
-from langchain_core.messages import (AIMessage, HumanMessage, convert_to_messages,
-                                     messages_from_dict, messages_to_dict)
+from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
+                                     convert_to_messages, messages_from_dict,
+                                     messages_to_dict)
 
 from app import db
 from app.config import HANDOFF_HOURS, HISTORY_CAP, SESSION_TTL_HOURS
+
+
+STATE_MSG_NAME = "session_state"   # marks the per-turn state note; never saved
 
 
 def _now() -> float:
@@ -44,6 +48,29 @@ class Session:
     @property
     def handoff_active(self) -> bool:
         return self.handoff_until > _now()
+
+    def state_message(self) -> SystemMessage:
+        """A short note telling the MODEL what the system already knows, rebuilt
+        every turn. The model cannot see code-owned state otherwise, so without
+        this it re-asks questions the customer already answered."""
+        branch = db.get_branch(self.branch_id) if self.branch_id else None
+        proposed = (db.get_branch(self.proposed_branch_id)
+                    if self.proposed_branch_id else None)
+        lines = ["SYSTEM STATE (authoritative, maintained by the system - not by you):"]
+        if branch:
+            lines.append(f"- Confirmed pickup branch: {branch['name']} ({branch['address']}).")
+            lines.append("  NEVER ask for the city or area again. Go straight to the shelf "
+                         "tools (search_products etc.) for whatever the customer asked.")
+        else:
+            lines.append("- Confirmed pickup branch: NONE.")
+            lines.append("  If the customer wants prices or to order, ask for their city or "
+                         "area, then call set_pickup_location.")
+        if proposed:
+            lines.append(f"- Branch waiting for the customer's yes/no: {proposed['name']} "
+                         f"({proposed['address']}).")
+            lines.append("  If they say yes or no, call confirm_pickup_branch "
+                         "(accepted true/false) - do not ask the location question again.")
+        return SystemMessage(content="\n".join(lines), name=STATE_MSG_NAME)
 
     # ----- state changes: each one saves immediately -----
     def propose_branch(self, branch_id: str | None) -> None:
@@ -71,7 +98,9 @@ class Session:
 
     def set_history(self, messages: list) -> None:
         """Replace chat history with the end-of-turn result (trimmed) and save."""
-        self.messages = trim_history(convert_to_messages(messages))
+        kept = [m for m in convert_to_messages(messages)
+                if getattr(m, "name", None) != STATE_MSG_NAME]   # state note is per-turn only
+        self.messages = trim_history(kept)
         self.save()
 
     # ----- persistence -----

@@ -7,7 +7,7 @@ Type  quit  (or q) to exit,  reset  to start a fresh conversation.
 from app.agent import run_agent
 from app.config import OLLAMA_MODEL
 from app.db import init_db
-from app.session import clear
+from app.session import clear, get_session
 
 PHONE = "live-user"   # pretend phone number for your test session
 
@@ -43,6 +43,9 @@ def main():
             print("Bot: [thinking came back empty — please repeat that]\n")
             continue
         print(f"Bot: {reply}\n")
+        st = get_session(PHONE)   # dev-only: the truth, next to what the model said
+        print(f"      [state: branch={st.branch_id} proposed={st.proposed_branch_id} "
+              f"handoff={st.handoff_active}]\n")
 
 
 if __name__ == "__main__":
