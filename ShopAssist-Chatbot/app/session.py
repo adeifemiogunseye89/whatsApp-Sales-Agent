@@ -44,6 +44,12 @@ class Session:
     proposed_branch_id: str | None = None          # offered, waiting for yes/no
     last_active: float = field(default_factory=lambda: _now())
 
+    def __post_init__(self):
+        # Repair: a saved session may hold a proposal equal to the confirmed
+        # branch (older versions allowed it). Nothing is waiting for a yes/no.
+        if self.proposed_branch_id and self.proposed_branch_id == self.branch_id:
+            self.proposed_branch_id = None
+
     # ----- read helpers -----
     @property
     def handoff_active(self) -> bool:
@@ -74,6 +80,8 @@ class Session:
 
     # ----- state changes: each one saves immediately -----
     def propose_branch(self, branch_id: str | None) -> None:
+        if branch_id and branch_id == self.branch_id:
+            branch_id = None   # invariant: never wait for a yes/no on the confirmed branch
         self.proposed_branch_id = branch_id
         self.save()
 
