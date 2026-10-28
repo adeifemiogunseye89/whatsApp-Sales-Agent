@@ -51,9 +51,16 @@ class fake_time:
         S._now = self._orig
 
 
+def confirm_branch(phone, accepted=True):
+    """Stage 3.1: the SYSTEM (not a tool) confirms or rejects a proposed branch."""
+    from app import branches
+    s = S.get_session(phone)
+    return branches.confirm_proposal(s) if accepted else branches.reject_proposal(s)
+
+
 def lock(phone, place="Lekki"):
     call(tools.set_pickup_location, phone, place=place)
-    call(tools.confirm_pickup_branch, phone, accepted=True)
+    confirm_branch(phone)
 
 
 # ---------------- N1: survives restart ----------------
@@ -70,7 +77,7 @@ def test_n1_pending_proposal_survives_restart():
     call(tools.set_pickup_location, p, place="Wuse")
     restart()
     assert S.get_session(p).proposed_branch_id == "BR-WUS"
-    assert "locked" in call(tools.confirm_pickup_branch, p, accepted=True)
+    assert "Pickup branch confirmed" in confirm_branch(p)
 
 
 def test_n1_order_key_survives_restart():

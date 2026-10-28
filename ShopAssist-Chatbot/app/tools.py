@@ -16,7 +16,7 @@ import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app import db, orders
+from app import branches, db, orders
 from app.config import HUMAN_ESCALATION_WEBHOOK
 from app.session import get_session
 from app.textfmt import money as _money, wat as _wat   # shared formatting
@@ -30,6 +30,10 @@ def set_context(phone: str):
 def _phone() -> str:
     return _phone_ctx.get("")
 
+
+BRANCH_SHOWN = ("BRANCH MESSAGE SHOWN. The system has already shown the customer the branch "
+                "information and will handle their reply. Do not repeat it and do not write "
+                "branch names or addresses.")
 
 NO_BRANCH_MSG = ("NO_BRANCH: no pickup branch is confirmed yet. Ask the customer "
                  "which city or area, then call set_pickup_location.")
@@ -69,47 +73,26 @@ def _resolve(branch_id: str, items: list[CartItem]) -> tuple[list[dict], list[st
 
 @tool
 def set_pickup_location(place: str) -> str:
-    """Find the pickup branch for a city, area or branch name (e.g. 'Abuja',
-    'Lekki', 'Ikeja Branch'). Also use this when the customer asks to switch
-    branch. If exactly one branch matches it is PROPOSED and the customer must
-    confirm; if several match, ask which one they want."""
+    """Find pickup branches for a city, area or branch name (e.g. 'Abuja',
+    'Lekki', 'Ikeja Branch'). Call this whenever the customer names a place,
+    asks which branches exist, or wants to switch branch. The SYSTEM shows the
+    customer the result and handles their yes/no itself."""
     matches = db.find_branches(place)
     session = get_session(_phone())
     session.propose_branch(None)
     if not matches:
-        return (f"No branch found for '{place}'. We currently serve: "
-                f"{', '.join(db.served_cities())}.")
+        session.set_outbox(branches.none_text(place))
+        return BRANCH_SHOWN
     if len(matches) > 1:
-        lines = "\n".join(f"- {b['name']} — {b['address']}" for b in matches)
-        return ("Several branches match. Ask the customer which one, then call "
-                "set_pickup_location again with that branch name:\n" + lines)
+        session.set_outbox(branches.list_text(matches))
+        return BRANCH_SHOWN
     b = matches[0]
     if b["branch_id"] == session.branch_id:
         return (f"*{b['name']}* is already the confirmed pickup branch. Tell the "
                 "customer so briefly, then carry on with what they asked.")
     session.propose_branch(b["branch_id"])
-    return (f"Proposed branch: *{b['name']}* — {b['address']}. "
-            f'Tell the customer exactly this, naming the branch and its address: '
-            f'"Your pickup branch would be *{b["name"]}* — {b["address"]}. '
-            f'Is that right? (yes/no)"')
-
-
-@tool
-def confirm_pickup_branch(accepted: bool) -> str:
-    """Call with accepted=true when the customer says yes to the proposed
-    branch, accepted=false when they say no."""
-    session = get_session(_phone())
-    proposed = db.get_branch(session.proposed_branch_id) if session.proposed_branch_id else None
-    if not proposed:
-        return "No branch is waiting for confirmation. Call set_pickup_location first."
-    if not accepted:
-        session.propose_branch(None)
-        return "Okay, not that one. Ask for another city, area or branch."
-    session.lock_branch(proposed["branch_id"])
-    return (f"Pickup branch locked: *{proposed['name']}*. All prices and stock "
-            "now come from this branch. Briefly confirm it to the customer, then "
-            "carry on with what they originally asked (look up that product, "
-            "quote, etc.) - do not ask the location question again.")
+    session.set_outbox(branches.proposal_text(b))     # shown verbatim; YES/NO handled by code
+    return BRANCH_SHOWN
 
 
 # ---------- shelf tools (all branch-scoped) ----------
@@ -235,8 +218,9 @@ def escalate_to_human(reason: str) -> str:
             "shortly. Thanks for your patience!")
 
 
-# NOTE (Stage 3): there is deliberately NO create_order tool. Orders are placed
-# by code (orders.confirm_pending) after the customer replies YES to a quote.
-ALL_TOOLS = [set_pickup_location, confirm_pickup_branch, search_products,
+# NOTE: there is deliberately NO create_order and NO confirm_pickup_branch tool.
+# Orders (orders.confirm_pending) and branches (branches.confirm_proposal) are
+# confirmed by CODE after the customer replies YES.
+ALL_TOOLS = [set_pickup_location, search_products,
              get_product_details, check_inventory, get_price_quote,
              track_order, escalate_to_human]

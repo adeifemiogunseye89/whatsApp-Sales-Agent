@@ -35,7 +35,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "shop.db")
 # Confirm the correct VAT treatment of your products with your accountant.
 TAX_RATE = float(os.getenv("TAX_RATE", "0"))
 DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))   # pickup-only = 0
-RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "4"))   # how long we hold stock
+RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "5"))   # how long we hold stock
 QUOTE_TTL_MINUTES = int(os.getenv("QUOTE_TTL_MINUTES", "10"))  # how long a quote can be confirmed
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))  # idle time before a chat is forgotten
 HANDOFF_HOURS = int(os.getenv("HANDOFF_HOURS", "4"))           # bot stays silent this long after escalation

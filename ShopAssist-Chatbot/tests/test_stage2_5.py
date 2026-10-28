@@ -48,6 +48,13 @@ def _agent():
     return A
 
 
+def confirm_branch(phone, accepted=True):
+    """Stage 3.1: the SYSTEM (not a tool) confirms or rejects a proposed branch."""
+    from app import branches
+    s = S.get_session(phone)
+    return branches.confirm_proposal(s) if accepted else branches.reject_proposal(s)
+
+
 # ---- N2: truthful note ----
 def test_n2_note_says_none_without_branch():
     p = "2348200000001"; S.clear(p)
@@ -58,7 +65,7 @@ def test_n2_note_says_none_without_branch():
 def test_n2_note_names_confirmed_branch_and_forbids_reasking():
     p = "2348200000002"; S.clear(p)
     call(tools.set_pickup_location, p, place="Lekki")
-    call(tools.confirm_pickup_branch, p, accepted=True)
+    confirm_branch(p)
     txt = S.get_session(p).state_message().content
     assert "Lekki Branch" in txt and "Lekki Phase 1" in txt
     assert "NEVER ask for the city or area again" in txt and "NONE" not in txt
@@ -69,7 +76,7 @@ def test_n2_note_shows_branch_waiting_for_yes_no():
     call(tools.set_pickup_location, p, place="Wuse")
     txt = S.get_session(p).state_message().content
     assert "waiting for the customer's yes/no: Wuse Branch" in txt
-    assert "call confirm_pickup_branch" in txt
+    assert "you cannot confirm a branch" in txt
 
 
 # ---- N1: placement ----
@@ -89,7 +96,7 @@ def test_n1_note_reflects_state_on_the_next_turn():
     A.run_agent(p, "hi")
     assert "NONE" in A.agent.calls[-1][-2].content
     call(tools.set_pickup_location, p, place="Ikeja")
-    call(tools.confirm_pickup_branch, p, accepted=True)
+    confirm_branch(p)
     A.run_agent(p, "how much is rice?")
     assert "Ikeja Branch" in A.agent.calls[-1][-2].content
 
@@ -107,17 +114,23 @@ def test_n3_note_is_not_saved_to_history():
 
 # ---- N4: tool wording ----
 def test_n4_proposal_names_branch_and_address_and_asks_yes_no():
-    out = call(tools.set_pickup_location, "2348200000007", place="Lekki")
-    assert out.startswith("Proposed branch")                 # old contract kept
-    assert 'Your pickup branch would be *Lekki Branch* — Demo address, Lekki Phase 1' in out
-    assert "(yes/no)" in out
+    p = "2348200000007"; S.clear(p)
+    out = call(tools.set_pickup_location, p, place="Lekki")
+    assert out.startswith("BRANCH MESSAGE SHOWN") and "Lekki" not in out, "model gets nothing to paraphrase"
+    shown = S.get_session(p).take_outbox()
+    assert "Your pickup branch would be *Lekki Branch* — Demo address, Lekki Phase 1" in shown
+    assert "Reply *YES* or *NO*" in shown
 
 
-def test_n4_confirm_tells_model_to_carry_on():
+def test_n4_confirmation_makes_model_carry_on():
     p = "2348200000008"; S.clear(p)
     call(tools.set_pickup_location, p, place="Lekki")
-    out = call(tools.confirm_pickup_branch, p, accepted=True)
-    assert "locked" in out and "carry on" in out and "do not ask the location question again" in out
+    lead = confirm_branch(p)
+    assert lead.startswith("Pickup branch confirmed: *Lekki Branch*")
+    st = S.get_session(p)
+    assert st.branch_just_confirmed
+    txt = st.state_message().content
+    assert "JUST confirmed this branch" in txt and "Carry on" in txt
 
 
 if __name__ == "__main__":

@@ -26,10 +26,17 @@ def call(tool_fn, phone, **args):
     return tool_fn.invoke(args)
 
 
+def confirm_branch(phone, accepted=True):
+    """Stage 3.1: the SYSTEM (not a tool) confirms or rejects a proposed branch."""
+    from app import branches
+    s = S.get_session(phone)
+    return branches.confirm_proposal(s) if accepted else branches.reject_proposal(s)
+
+
 def confirmed(phone, place="Lekki"):
     S.clear(phone)
     call(tools.set_pickup_location, phone, place=place)
-    call(tools.confirm_pickup_branch, phone, accepted=True)
+    confirm_branch(phone)
 
 
 def test_n1_cannot_propose_the_confirmed_branch():
@@ -56,11 +63,11 @@ def test_n3_stale_saved_proposal_is_repaired_on_load():
 
 def test_n4_switching_to_another_branch_still_works():
     p = "2348300000004"; confirmed(p, "Lekki")
-    out = call(tools.set_pickup_location, p, place="Ikeja")
-    assert "Your pickup branch would be *Ikeja Branch*" in out
+    call(tools.set_pickup_location, p, place="Ikeja")
+    assert "Your pickup branch would be *Ikeja Branch*" in S.get_session(p).take_outbox()
     assert S.get_session(p).proposed_branch_id == "BR-IKJ"
     assert "waiting for the customer's yes/no: Ikeja Branch" in S.get_session(p).state_message().content
-    call(tools.confirm_pickup_branch, p, accepted=True)
+    confirm_branch(p)
     st = S.get_session(p)
     assert st.branch_id == "BR-IKJ" and st.proposed_branch_id is None
 
@@ -68,7 +75,7 @@ def test_n4_switching_to_another_branch_still_works():
 def test_n4_declining_a_switch_keeps_the_old_branch():
     p = "2348300000005"; confirmed(p, "Lekki")
     call(tools.set_pickup_location, p, place="Wuse")
-    call(tools.confirm_pickup_branch, p, accepted=False)
+    confirm_branch(p, False)
     st = S.get_session(p)
     assert st.branch_id == "BR-LKI" and st.proposed_branch_id is None
 

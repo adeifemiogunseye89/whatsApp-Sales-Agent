@@ -17,7 +17,7 @@ from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
 from app import db as _db
-from app import orders
+from app import branches, guards, orders
 from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
 from app.session import append_message, get_session
 from app.textfmt import to_whatsapp
@@ -35,8 +35,8 @@ TOOLS:
 LOCATION FIRST (the golden rule):
 - Before any prices, stock checks, quotes or orders, a pickup branch must be CONFIRMED. The system tracks this itself: shelf tools reply NO_BRANCH if none is confirmed.
 - If the customer wants prices, wants to buy or reserve, and no branch is confirmed, ask: "Which city or area will the pickup happen in?"
-- Call set_pickup_location with their answer. If it proposes ONE branch, show it and ask the customer to confirm (yes/no). If it lists several, ask which one they want, then call set_pickup_location again with that branch name.
-- When they answer yes/no, call confirm_pickup_branch (accepted true or false).
+- Call set_pickup_location with their answer. The SYSTEM then shows the customer the branch (or the list of branches) and asks them to reply YES or NO itself. The SYSTEM confirms the branch; you cannot.
+- NEVER write branch names or addresses yourself. They come only from set_pickup_location. If the customer asks which branches exist, call set_pickup_location with their city or area.
 - Once confirmed, do not ask again — unless the customer asks to switch branch; then call set_pickup_location again.
 
 BRANCH RULES:
@@ -56,24 +56,8 @@ STRICT RULES:
 3. NEVER say an order is placed, reserved or confirmed. Only the system places orders, after the customer replies YES to its quote.
 4. Copy prices exactly as the tools give them.
 5. If a tool result contains an error, read it carefully, fix your next call, and tell the customer politely what happened.
-
-EXAMPLE CONVERSATION:
-Customer: I want to buy some rice for my mum
-Assistant: Lovely! Which city or area will she pick it up in?
-
-Customer: Abuja
-Assistant: (after set_pickup_location) Our branch in Abuja:
-*Wuse Branch* — 14 Wuse Road, Wuse
-Is this the right pickup branch? (yes/no)
-
-Customer: yes
-Assistant: (after confirm_pickup_branch) Locked in: Wuse Branch. From now on I'll quote Wuse Branch prices and stock.
-
-Customer: do you have basmati rice?
-Assistant: - P-1001: Royal Basmati Rice 5kg (price) (6 in stock)
-
-Customer: take one, how much?
-Assistant: (call get_price_quote with P-1001 x 1; the system shows the quote and asks YES/NO)"""
+6. NEVER say a pickup branch is set, locked or confirmed. Only the system does that.
+"""
 
 # qwen3 "thinks out loud" by default which breaks tool calling -> switch that
 # off ONLY for qwen3 models. Other models don't understand this option.
@@ -133,12 +117,15 @@ def _with_final_reply(msgs: list, text: str) -> list:
 
 def run_agent(phone: str, text: str) -> str | None:
     """One customer turn. Order of authority:
-      1. handoff active        -> stay silent
-      2. clean YES/NO to quote -> CODE answers (orders.py), model not involved
-      3. model turn            -> if a tool wrote a reply (outbox), that text is
-                                  shown verbatim instead of the model's wording
-      4. otherwise             -> leak repair + fake-order guard + ground-truth
-                                  filter; a reply only leaves if reality agrees."""
+      1. handoff active           -> stay silent
+      2. YES/NO to a branch       -> CODE answers (branches.py); on YES the model
+         proposal                    then carries on with the original request
+      3. YES/NO to a quote        -> CODE answers (orders.py), model not involved
+      4. model turn               -> a tool-written reply (outbox) is shown
+                                     verbatim instead of the model's wording
+      5. otherwise                -> leak repair + order guard + branch guard +
+                                     ground-truth filter. Replies that fail a
+                                     guard are NEVER saved to chat history."""
     set_context(phone)
     session = get_session(phone)
     if session.handoff_active:
@@ -147,9 +134,21 @@ def run_agent(phone: str, text: str) -> str | None:
         session.save()
         return None
     session.take_outbox()                      # clear anything left from a failed turn
+    session.branch_just_confirmed = False
     append_message(session, "user", text)
 
-    if session.quote_awaiting_reply():
+    lead = None   # code-written opening line, e.g. "Pickup branch confirmed: ..."
+    if session.branch_awaiting_reply():
+        decision = orders.parse_confirmation(text)
+        if decision == "no":
+            reply = branches.reject_proposal(session)
+            append_message(session, "assistant", reply)
+            session.save()
+            return reply
+        if decision == "yes":
+            lead = branches.confirm_proposal(session)   # model resumes the request below
+
+    if lead is None and session.quote_awaiting_reply():
         decision = orders.parse_confirmation(text)
         if decision:
             reply = (orders.confirm_pending(session) if decision == "yes"
@@ -158,9 +157,13 @@ def run_agent(phone: str, text: str) -> str | None:
             session.save()
             return reply
 
+    def shown(body: str) -> str:
+        return f"{lead}\n\n{body}" if lead else body
+
     history = list(session.messages)   # ends with the customer's new message
     # Show the model the system's state, right before the customer's message.
-    msgs = history[:-1] + [session.state_message()] + history[-1:]
+    turn_base = history[:-1] + [session.state_message()] + history[-1:]
+    msgs = turn_base
     for _ in range(4):
         result = agent.invoke({"messages": msgs})
         new_msgs = result["messages"][len(msgs):]
@@ -173,8 +176,9 @@ def run_agent(phone: str, text: str) -> str | None:
 
         code_reply = session.take_outbox()
         if code_reply:                         # a tool wrote the customer's message
-            session.set_history(_with_final_reply(msgs, code_reply))
-            return code_reply
+            final = shown(code_reply)
+            session.set_history(_with_final_reply(turn_base + new_msgs, final))
+            return final
 
         last = msgs[-1]
         reply = last.content if hasattr(last, "content") else str(last)
@@ -184,10 +188,19 @@ def run_agent(phone: str, text: str) -> str | None:
         fake_order = (not leak and "track_order" not in tools_called
                       and bool(_FAKE_ORDER_RE.search(reply)))
         db_mismatch = not _claims_match_database(phone, reply)
+        tool_text = " ".join(m.content for m in msgs[len(turn_base):]
+                              if isinstance(m, ToolMessage) and isinstance(m.content, str))
+        branch_issue = (None if leak else
+                        guards.bad_branch_claim(session, reply, tools_called, tool_text))
 
-        if leak is None and not fake_order and not db_mismatch:
-            session.set_history(msgs)
-            return to_whatsapp(reply.strip() or "[no reply]")
+        if leak is None and not fake_order and not db_mismatch and not branch_issue:
+            body = to_whatsapp(reply.strip())
+            if not body:
+                body = "What would you like to order?" if lead else "[no reply]"
+            final = shown(body)
+            # Save only THIS attempt: earlier rejected attempts never reach history.
+            session.set_history(_with_final_reply(turn_base + new_msgs, final))
+            return final
         if leak is not None:
             # --- leak: become the model's hands and run the tool ---
             name, args = leak
@@ -218,6 +231,18 @@ def run_agent(phone: str, text: str) -> str | None:
                  "asked about status, call track_order and report exactly what "
                  "it returns (including 'none found')."},
             ]
+        elif branch_issue:
+            # --- the reply talks about branches the database does not back up ---
+            msgs = list(msgs) + [
+                AIMessage(content=reply),
+                {"role": "user", "content":
+                 "SYSTEM NOTICE: BRANCH CHECK FAILED. " + branch_issue + " Branch "
+                 "names and addresses come ONLY from set_pickup_location, and only "
+                 "the system confirms a branch. Do not write branch names or "
+                 "addresses, and do not say a branch is set. If the customer asked "
+                 "about branches or named a place, call set_pickup_location with "
+                 "it; otherwise answer without mentioning branches."},
+            ]
         else:
             # --- fake order: scold and force a real tool call ---
             msgs = list(msgs) + [
@@ -231,11 +256,11 @@ def run_agent(phone: str, text: str) -> str | None:
             ]
         # loop: model continues with the tool result or the correction
 
-    # emergency exit: NEVER hand over an unverified order claim
-    session.set_history(msgs)
-    for m in reversed(msgs):
-        if isinstance(m, AIMessage) and isinstance(m.content, str) \
-                and m.content.strip() and not _ORDER_CLAIM_RE.search(m.content):
-            return to_whatsapp(m.content)
-    return ("Sorry, I couldn't complete that just now. Let me connect you "
-            "to a human agent — please hold on.")
+    # Emergency exit: nothing the model said passed the checks, so show NONE of it.
+    # (Before Stage 3.1 this returned the last model message that merely avoided
+    # order claims - which could be an invented branch.)
+    final = shown("What would you like to order?") if lead else (
+        "Sorry, I couldn't complete that just now. Please try again, or tell me "
+        "if you'd like a human agent.")
+    session.set_history(turn_base + [AIMessage(content=final)])
+    return final

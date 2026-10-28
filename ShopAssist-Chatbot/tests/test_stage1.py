@@ -33,9 +33,16 @@ def call(tool_fn, phone, **args):
     return tool_fn.invoke(args)
 
 
+def confirm_branch(phone, accepted=True):
+    """Stage 3.1: the SYSTEM (not a tool) confirms or rejects a proposed branch."""
+    from app import branches
+    s = get_session(phone)
+    return branches.confirm_proposal(s) if accepted else branches.reject_proposal(s)
+
+
 def lock_branch(phone, place):
     call(tools.set_pickup_location, phone, place=place)
-    call(tools.confirm_pickup_branch, phone, accepted=True)
+    confirm_branch(phone)
 
 
 # ---- N1: prices and stock are per branch; no cross-branch visibility ----
@@ -128,21 +135,26 @@ def test_n4_tools_refuse_without_branch():
 
 
 def test_n4_propose_confirm_flow_and_lock_survives_history_loss():
+    # Stage 3.1: the model only PROPOSES; the system shows the text and confirms.
     p = "2348000000011"; clear(p)
-    out = call(tools.set_pickup_location, p, place="Lagos")
-    assert "Several branches" in out and "Lekki" in out and "Ikeja" in out
-    assert "Proposed branch" in call(tools.set_pickup_location, p, place="Lekki")
-    assert "Okay, not that one" in call(tools.confirm_pickup_branch, p, accepted=False)
+    call(tools.set_pickup_location, p, place="Lagos")
+    shown = get_session(p).take_outbox()
+    assert "Which branch would you like" in shown and "Lekki Branch" in shown and "Ikeja Branch" in shown
+    call(tools.set_pickup_location, p, place="Lekki")
+    assert "Your pickup branch would be *Lekki Branch*" in get_session(p).take_outbox()
+    assert "Okay" in confirm_branch(p, False)
     assert get_session(p).branch_id is None, "a 'no' must not lock anything"
     call(tools.set_pickup_location, p, place="Ikeja Branch")
-    assert "locked" in call(tools.confirm_pickup_branch, p, accepted=True)
+    assert "Pickup branch confirmed" in confirm_branch(p)
     get_session(p).messages.clear()                     # simulate history truncation
     assert "Ikeja Branch" in call(tools.search_products, p, keyword="rice")
 
 
 def test_n4_unknown_place_lists_served_cities():
-    out = call(tools.set_pickup_location, "2348000000012", place="Kano")
-    assert "No branch found" in out and "Abuja" in out and "Lagos" in out
+    p = "2348000000012"; clear(p)
+    call(tools.set_pickup_location, p, place="Kano")
+    shown = get_session(p).take_outbox()
+    assert "couldn't find a branch" in shown and "Abuja" in shown and "Lagos" in shown
 
 
 def test_n4_switching_branch_changes_prices():
@@ -191,7 +203,7 @@ def test_n5_every_tool_named_in_prompt_exists():
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", SYSTEM_PROMPT))
     real = {t.name for t in tools.ALL_TOOLS}
     assert named <= real, f"prompt mentions tools that don't exist: {named - real}"
-    assert {"set_pickup_location", "confirm_pickup_branch"} <= named
+    assert "set_pickup_location" in named and "confirm_pickup_branch" not in named
 
 
 if __name__ == "__main__":

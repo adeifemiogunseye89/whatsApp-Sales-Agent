@@ -45,6 +45,7 @@ class Session:
     proposed_branch_id: str | None = None          # offered, waiting for yes/no
     pending_quote: dict | None = None              # itemised quote awaiting the customer's YES/NO
     outbox: str | None = field(default=None, repr=False)   # code-written reply for this turn (never saved)
+    branch_just_confirmed: bool = field(default=False, repr=False)   # this turn only (never saved)
     last_active: float = field(default_factory=lambda: _now())
 
     def __post_init__(self):
@@ -72,6 +73,11 @@ class Session:
             lines.append(f"- Confirmed pickup branch: {branch['name']} ({branch['address']}).")
             lines.append("  NEVER ask for the city or area again. Go straight to the shelf "
                          "tools (search_products etc.) for whatever the customer asked.")
+            if self.branch_just_confirmed:
+                lines.append("  The customer JUST confirmed this branch by saying yes. Carry on with "
+                             "what they asked before the branch step (see earlier messages) using the "
+                             "shelf tools. If they had not asked for anything yet, reply only: "
+                             "What would you like to order?")
         else:
             lines.append("- Confirmed pickup branch: NONE.")
             lines.append("  If the customer wants prices or to order, ask for their city or "
@@ -79,8 +85,8 @@ class Session:
         if proposed:
             lines.append(f"- Branch waiting for the customer's yes/no: {proposed['name']} "
                          f"({proposed['address']}).")
-            lines.append("  If they say yes or no, call confirm_pickup_branch "
-                         "(accepted true/false) - do not ask the location question again.")
+            lines.append("  The system handles their yes/no itself; you cannot confirm a branch. "
+                         "If they name a different place instead, call set_pickup_location with it.")
         q = self.pending_quote
         if q:
             items = ", ".join(f"{i['quantity']} × {i['name']}" for i in q["items"])
@@ -122,6 +128,10 @@ class Session:
 
     def quote_expired(self) -> bool:
         return bool(self.pending_quote) and _now() > self.pending_quote["expires_at"]
+
+    def branch_awaiting_reply(self) -> bool:
+        """True when a bare YES/NO should be read as the answer to a branch proposal."""
+        return bool(self.proposed_branch_id)
 
     def quote_awaiting_reply(self) -> bool:
         """True when a bare YES/NO should be read as the answer to the quote

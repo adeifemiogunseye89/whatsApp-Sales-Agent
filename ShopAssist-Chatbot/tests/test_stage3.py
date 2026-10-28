@@ -61,10 +61,18 @@ def agent_mod(fake):
     return A
 
 
+def confirm_branch(phone, accepted=True):
+    """Stage 3.1: the SYSTEM (not a tool) confirms or rejects a proposed branch."""
+    from app import branches
+    s = S.get_session(phone)
+    return branches.confirm_proposal(s) if accepted else branches.reject_proposal(s)
+
+
 def shopper(phone, place="Lekki"):
     S.clear(phone)
     call(tools.set_pickup_location, phone, place=place)
-    call(tools.confirm_pickup_branch, phone, accepted=True)
+    confirm_branch(phone)
+    S.get_session(phone).take_outbox()      # run_agent clears this each turn; direct tool calls must too
 
 
 def quote(phone, *lines):
@@ -180,15 +188,16 @@ def test_n4_unclear_reply_goes_to_the_model_and_keeps_the_quote():
     assert "waiting for the customer's YES/NO" in fake.calls[0][-2].content
 
 
-def test_n4_branch_yes_no_is_not_stolen_by_a_pending_quote():
+def test_n4_yes_answers_the_open_branch_question_not_the_quote():
     p = "2348400000008"; shopper(p)
     A = agent_mod(FakeAgent(lambda inp: (quote(p, ("P-1001", 1)), "x")[1]))
     A.run_agent(p, "one basmati")
     call(tools.set_pickup_location, p, place="Wuse")           # branch question now open
-    fake = FakeAgent(text="model handles the branch answer")
-    A = agent_mod(fake)
-    assert A.run_agent(p, "yes") == "model handles the branch answer"
-    assert fake.calls and order_count(p) == 0
+    A = agent_mod(FakeAgent(text="Prices at Wuse coming right up"))
+    out = A.run_agent(p, "yes")                                 # code locks Wuse; quote is voided
+    assert out.startswith("Pickup branch confirmed: *Wuse Branch*") and "cancelled" in out
+    assert order_count(p) == 0 and S.get_session(p).branch_id == "BR-WUS"
+    assert S.get_session(p).pending_quote is None
 
 
 # ---------------- N5 ----------------
@@ -270,7 +279,7 @@ def test_n7_branch_change_voids_the_quote():
     p = "2348400000016"; shopper(p)
     quote(p, ("P-1002", 1))
     call(tools.set_pickup_location, p, place="Ikeja")
-    call(tools.confirm_pickup_branch, p, accepted=True)
+    confirm_branch(p)
     assert S.get_session(p).pending_quote is None
     assert "nothing waiting" in orders.confirm_pending(S.get_session(p)).lower()
 
@@ -292,8 +301,8 @@ def test_n8_whatsapp_formatting():
 
 def test_n8_model_markdown_is_converted_on_the_way_out():
     p = "2348400000018"; S.clear(p)
-    A = agent_mod(FakeAgent(text="At **Lekki Branch** basmati is **₦14,500**"))
-    assert A.run_agent(p, "hi") == "At *Lekki Branch* basmati is *₦14,500*"
+    A = agent_mod(FakeAgent(text="Basmati is **₦14,500** today"))
+    assert A.run_agent(p, "hi") == "Basmati is *₦14,500* today"
 
 
 def test_n8_model_cannot_fake_an_order():
