@@ -10,17 +10,38 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from app.agent import run_agent
-from app.config import WHATSAPP_VERIFY_TOKEN
-from app.db import init_db
+from app.config import SWEEP_MINUTES, WHATSAPP_VERIFY_TOKEN
+from app.db import init_db, release_expired
 from app.session import purge_expired
 from app.whatsapp import send_whatsapp
 
 app = FastAPI(title="ShopAssist Bot", docs_url=None, redoc_url=None)
 
+
+def sweep_once() -> int:
+    """Expire reservations whose hold + grace has ended and put their stock back."""
+    return release_expired()
+
+
+async def sweep_forever() -> None:
+    """Every SWEEP_MINUTES, so the shelf is right even when nobody is chatting."""
+    while True:
+        await asyncio.sleep(SWEEP_MINUTES * 60)
+        try:
+            released = await asyncio.to_thread(sweep_once)
+            if released:
+                print(f"[sweeper] released {released} expired reservation(s)")
+        except Exception as e:                   # the sweeper must never die
+            print(f"[sweeper error] {e!r}")
+
+
 @app.on_event("startup")
-def startup() -> None:
-    init_db()
+async def startup() -> None:
+    init_db()         # also upgrades an older database in place
     purge_expired()   # forget chats idle past SESSION_TTL_HOURS
+    sweep_once()      # release anything that expired while the server was off
+    app.state.sweeper = asyncio.create_task(sweep_forever())
+
 
 # ---------- Meta webhook verification ----------
 
@@ -55,6 +76,7 @@ async def receive_webhook(request: Request):
         phone, text = extracted
         asyncio.create_task(_handle(phone, text))
     return {"status": "ok"}  # always ACK fast — Meta retries otherwise
+
 
 async def _handle(phone: str, text: str) -> None:
     try:

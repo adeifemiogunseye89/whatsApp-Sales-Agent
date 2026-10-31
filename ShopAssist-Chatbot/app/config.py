@@ -37,6 +37,10 @@ TAX_RATE = float(os.getenv("TAX_RATE", "0"))
 DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))   # pickup-only = 0
 RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "5"))   # how long we hold stock
 QUOTE_TTL_MINUTES = int(os.getenv("QUOTE_TTL_MINUTES", "10"))  # how long a quote can be confirmed
+GRACE_MINUTES = int(os.getenv("GRACE_MINUTES", "30"))          # extra time to collect after the hold ends
+DAILY_RESERVATION_LIMIT = int(os.getenv("DAILY_RESERVATION_LIMIT", "3"))   # per phone, rolling 24 hours
+SWEEP_MINUTES = int(os.getenv("SWEEP_MINUTES", "5"))           # how often expired holds are released
+LOG_DIR = os.getenv("LOG_DIR", "logs")                         # per-turn diagnostics (no customer text)
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))  # idle time before a chat is forgotten
 HANDOFF_HOURS = int(os.getenv("HANDOFF_HOURS", "4"))           # bot stays silent this long after escalation
 HISTORY_CAP = int(os.getenv("HISTORY_CAP", "20"))              # max chat messages kept / sent to the model

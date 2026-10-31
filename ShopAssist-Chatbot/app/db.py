@@ -17,8 +17,8 @@ import secrets
 import sqlite3
 import threading
 
-from app.config import (DATABASE_PATH, DELIVERY_FEE_KOBO, RESERVATION_HOURS,
-                        TAX_RATE)
+from app.config import (DAILY_RESERVATION_LIMIT, DATABASE_PATH, DELIVERY_FEE_KOBO,
+                        GRACE_MINUTES, RESERVATION_HOURS, TAX_RATE)
 
 _local = threading.local()
 
@@ -100,7 +100,9 @@ CREATE TABLE IF NOT EXISTS orders (
     status          TEXT NOT NULL DEFAULT 'RESERVED'
         CHECK (status IN ('RESERVED','READY','COLLECTED','CANCELLED','EXPIRED')),
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at      TEXT NOT NULL
+    expires_at      TEXT NOT NULL,
+    release_at      TEXT,
+    closed_at       TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_branch_code
     ON orders(branch_id, pickup_code);
@@ -113,9 +115,23 @@ CREATE TABLE IF NOT EXISTS sessions (
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Upgrade an existing database in place (safe to run every start)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
+    with conn:
+        if "release_at" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN release_at TEXT")
+        if "closed_at" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN closed_at TEXT")
+        # orders made before Stage 4 get the same grace as new ones
+        conn.execute("UPDATE orders SET release_at = datetime(expires_at, ?) "
+                     "WHERE release_at IS NULL", (f"+{GRACE_MINUTES} minutes",))
+
+
 def init_db() -> None:
     conn = get_conn()
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     if conn.execute("SELECT COUNT(*) AS c FROM branches").fetchone()["c"] == 0:
         with conn:  # one transaction: all seed tables or none
             conn.executemany(
@@ -202,6 +218,26 @@ def compute_totals(items: list[dict]) -> dict:
 
 # ---------- order write (atomic + idempotent) ----------
 
+class QuotaExceeded(Exception):
+    """The phone already made DAILY_RESERVATION_LIMIT reservations in 24 hours."""
+    def __init__(self, opens_at: str):
+        super().__init__(f"daily reservation limit reached; next slot opens {opens_at} UTC")
+        self.opens_at = opens_at
+
+
+def reservation_window(phone: str) -> tuple[int, str | None]:
+    """(reservations created in the last 24 hours, UTC time the next slot opens or None).
+    EVERY reservation counts - cancelled and expired ones too - so a slot can never be
+    won back by cancelling (this blocks reserve-and-cancel flooding)."""
+    rows = get_conn().execute(
+        """SELECT datetime(created_at, '+24 hours') AS frees FROM orders
+           WHERE customer_phone = ? AND created_at >= datetime('now', '-24 hours')
+           ORDER BY created_at ASC, rowid ASC""", (phone,)).fetchall()
+    n = len(rows)
+    opens = rows[n - DAILY_RESERVATION_LIMIT]["frees"] if n >= DAILY_RESERVATION_LIMIT else None
+    return n, opens
+
+
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I: read aloud at a counter
 
 
@@ -232,6 +268,9 @@ def create_order_db(idempotency_key: str, branch_id: str, phone: str,
         if existing:
             conn.rollback()
             return existing
+        _, opens_at = reservation_window(phone)      # checked INSIDE the write lock
+        if opens_at:
+            raise QuotaExceeded(opens_at)
         for i in items:
             cur = conn.execute(
                 "UPDATE branch_inventory SET stock_qty = stock_qty - ? "
@@ -245,8 +284,8 @@ def create_order_db(idempotency_key: str, branch_id: str, phone: str,
         conn.execute(
             """INSERT INTO orders (order_id, idempotency_key, branch_id,
                    customer_phone, items_json, subtotal_kobo, tax_kobo,
-                   delivery_kobo, total_kobo, pickup_code, expires_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now', ?))""",
+                   delivery_kobo, total_kobo, pickup_code, expires_at, release_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now', ?), datetime('now', ?))""",
             (order_id, idempotency_key, branch_id, phone,
              json.dumps([{"product_id": i["item"]["product_id"],
                           "name": i["item"]["name"],
@@ -255,7 +294,8 @@ def create_order_db(idempotency_key: str, branch_id: str, phone: str,
                          for i in items]),
              totals["subtotal"], totals["tax"], totals["delivery"],
              totals["total"], _new_pickup_code(conn, branch_id),
-             f"+{RESERVATION_HOURS} hours"),
+             f"+{RESERVATION_HOURS * 60} minutes",
+             f"+{RESERVATION_HOURS * 60 + GRACE_MINUTES} minutes"),
         )
         conn.commit()
     except Exception:
@@ -266,8 +306,10 @@ def create_order_db(idempotency_key: str, branch_id: str, phone: str,
 
 # ---------- order reads ----------
 
-_ORDER_SELECT = """SELECT o.*, b.name AS branch_name FROM orders o
-                   JOIN branches b ON b.branch_id = o.branch_id"""
+_ORDER_SELECT = """SELECT o.*, b.name AS branch_name,
+                          (o.status = 'RESERVED' AND o.expires_at <= datetime('now')) AS in_grace,
+                          (o.status = 'RESERVED' AND o.release_at <= datetime('now')) AS past_release
+                   FROM orders o JOIN branches b ON b.branch_id = o.branch_id"""
 
 
 def orders_for_phone(phone: str, limit: int = 5) -> list[sqlite3.Row]:
@@ -284,7 +326,118 @@ def get_order_for_phone(order_id: str, phone: str) -> sqlite3.Row | None:
         (order_id.strip().upper(), phone),
     ).fetchone()
 
+
+# ---------- reservation lifecycle (Stage 4) ----------
+# An order is OPEN while status = RESERVED and release_at is in the future
+# (that covers the hold AND the grace period). Stock is returned exactly once,
+# in the same transaction that moves the status, so it can never be returned twice.
+
+def _restore_stock(conn: sqlite3.Connection, order) -> None:
+    for it in json.loads(order["items_json"]):
+        conn.execute(
+            "UPDATE branch_inventory SET stock_qty = stock_qty + ? "
+            "WHERE branch_id = ? AND product_id = ?",
+            (it["quantity"], order["branch_id"], it["product_id"]))
+
+
+def _close(conn: sqlite3.Connection, order_id: str, new_status: str) -> bool:
+    cur = conn.execute(
+        "UPDATE orders SET status = ?, closed_at = datetime('now') "
+        "WHERE order_id = ? AND status = 'RESERVED'", (new_status, order_id))
+    return cur.rowcount == 1
+
+
+def release_expired() -> int:
+    """Expire every reservation whose hold + grace has ended and put its stock back.
+    Cheap when there is nothing to do, so it is safe to call on every customer turn."""
+    conn = get_conn()
+    if not conn.execute("SELECT 1 FROM orders WHERE status = 'RESERVED' "
+                        "AND release_at <= datetime('now') LIMIT 1").fetchone():
+        return 0
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        due = conn.execute("SELECT * FROM orders WHERE status = 'RESERVED' "
+                           "AND release_at <= datetime('now')").fetchall()
+        n = 0
+        for o in due:
+            if _close(conn, o["order_id"], "EXPIRED"):
+                _restore_stock(conn, o)
+                n += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return n
+
+
+def open_orders_for_phone(phone: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        _ORDER_SELECT + " WHERE o.customer_phone = ? AND o.status = 'RESERVED' "
+        "AND o.release_at > datetime('now') "
+        "ORDER BY o.created_at DESC, o.rowid DESC", (phone,)).fetchall()
+
+
+def _open_order_locked(conn: sqlite3.Connection, order_id: str, phone: str):
+    row = conn.execute(
+        "SELECT * FROM orders WHERE order_id = ? AND customer_phone = ? "
+        "AND status = 'RESERVED' AND release_at > datetime('now')",
+        (order_id.strip().upper(), phone)).fetchone()
+    if not row:
+        raise ValueError("that reservation is not open any more (or is not yours)")
+    return row
+
+
+def cancel_order_db(order_id: str, phone: str) -> sqlite3.Row:
+    """Cancel an OPEN reservation of this phone and return its stock. The daily
+    reservation slot it used is NOT given back."""
+    conn = get_conn()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        order = _open_order_locked(conn, order_id, phone)
+        if not _close(conn, order["order_id"], "CANCELLED"):
+            raise ValueError("that reservation is not open any more")
+        _restore_stock(conn, order)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return get_order_for_phone(order_id, phone)
+
+
+def amend_order_db(order_id: str, phone: str, items: list[dict], totals: dict) -> sqlite3.Row:
+    """Replace the items of an OPEN reservation IN PLACE: same order id, same pickup
+    code, same hold clock, no extra reservation slot. Old units go back and the new
+    units are taken in one transaction; if any line lacks stock nothing changes."""
+    conn = get_conn()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        order = _open_order_locked(conn, order_id, phone)
+        _restore_stock(conn, order)
+        for i in items:
+            cur = conn.execute(
+                "UPDATE branch_inventory SET stock_qty = stock_qty - ? "
+                "WHERE branch_id = ? AND product_id = ? AND stock_qty >= ?",
+                (i["quantity"], order["branch_id"], i["item"]["product_id"], i["quantity"]))
+            if cur.rowcount == 0:
+                raise ValueError(f"Not enough stock for {i['item']['name']}")
+        conn.execute(
+            "UPDATE orders SET items_json = ?, subtotal_kobo = ?, tax_kobo = ?, "
+            "delivery_kobo = ?, total_kobo = ? WHERE order_id = ?",
+            (json.dumps([{"product_id": i["item"]["product_id"], "name": i["item"]["name"],
+                          "quantity": i["quantity"], "unit_price_kobo": i["item"]["price_kobo"]}
+                         for i in items]),
+             totals["subtotal"], totals["tax"], totals["delivery"], totals["total"],
+             order["order_id"]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return get_order_for_phone(order_id, phone)
+
+
 # ---------- session persistence (Stage 2) ----------
+# The Session object lives in app/session.py; this layer only stores its JSON.
+
 def load_session_json(phone: str) -> str | None:
     row = get_conn().execute(
         "SELECT state_json FROM sessions WHERE phone = ?", (phone,)).fetchone()

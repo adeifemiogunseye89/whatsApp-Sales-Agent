@@ -29,6 +29,10 @@ from app.config import HANDOFF_HOURS, HISTORY_CAP, SESSION_TTL_HOURS
 STATE_MSG_NAME = "session_state"   # marks the per-turn state note; never saved
 
 
+def _items_line(order) -> str:
+    return ", ".join(f"{i['quantity']} × {i['name']}" for i in json.loads(order["items_json"]))
+
+
 def _now() -> float:
     """Single clock for this module (tests replace it to fake time passing)."""
     return time.time()
@@ -44,8 +48,10 @@ class Session:
     branch_id: str | None = None                   # CONFIRMED pickup branch
     proposed_branch_id: str | None = None          # offered, waiting for yes/no
     pending_quote: dict | None = None              # itemised quote awaiting the customer's YES/NO
+    pending_action: dict | None = None             # cancel / amend request awaiting YES/NO
     outbox: str | None = field(default=None, repr=False)   # code-written reply for this turn (never saved)
     branch_just_confirmed: bool = field(default=False, repr=False)   # this turn only (never saved)
+    last_turn: dict = field(default_factory=dict, repr=False)        # diagnostics (never saved)
     last_active: float = field(default_factory=lambda: _now())
 
     def __post_init__(self):
@@ -87,6 +93,18 @@ class Session:
                          f"({proposed['address']}).")
             lines.append("  The system handles their yes/no itself; you cannot confirm a branch. "
                          "If they name a different place instead, call set_pickup_location with it.")
+        open_orders = db.open_orders_for_phone(self.phone)[:3]
+        if open_orders:
+            desc = "; ".join(f"{o['order_id']} ({_items_line(o)}; {money(o['total_kobo'])}; "
+                             f"{o['branch_name']})" for o in open_orders)
+            lines.append(f"- Open reservations: {desc}.")
+            lines.append("  To change one, call amend_order with the FULL new basket; to cancel "
+                         "one, call cancel_order. Never create a new reservation to replace one.")
+        a = self.pending_action
+        if a:
+            verb = "cancel" if a["type"] == "cancel" else "change"
+            lines.append(f"- A request to {verb} {a['order_id']} is waiting for the customer's "
+                         "YES/NO. The system handles it; you cannot confirm it.")
         q = self.pending_quote
         if q:
             items = ", ".join(f"{i['quantity']} × {i['name']}" for i in q["items"])
@@ -108,6 +126,7 @@ class Session:
         self.branch_id = branch_id
         self.proposed_branch_id = None
         self.pending_quote = None   # a quote for the old branch is void
+        self.pending_action = None
         self.cart.clear()          # a different branch means different prices/stock
         self.save()
 
@@ -120,7 +139,24 @@ class Session:
     # ----- quote + outbox (Stage 3) -----
     def set_quote(self, quote: dict) -> None:
         self.pending_quote = quote
+        self.pending_action = None      # only one open question at a time
         self.save()
+
+    def set_action(self, action: dict) -> None:
+        self.pending_action = action
+        self.pending_quote = None       # only one open question at a time
+        self.save()
+
+    def clear_action(self) -> None:
+        self.pending_action = None
+        self.save()
+
+    def action_expired(self) -> bool:
+        return bool(self.pending_action) and _now() > self.pending_action["expires_at"]
+
+    def action_awaiting_reply(self) -> bool:
+        """A bare YES/NO answers the cancel/amend request (unless a branch question is open)."""
+        return bool(self.pending_action) and not self.proposed_branch_id
 
     def clear_quote(self) -> None:
         self.pending_quote = None
@@ -170,6 +206,7 @@ class Session:
             "branch_id": self.branch_id,
             "proposed_branch_id": self.proposed_branch_id,
             "pending_quote": self.pending_quote,
+            "pending_action": self.pending_action,
             "last_active": self.last_active,
         }, default=str)   # default=str: an odd metadata value must never crash a save
 
@@ -225,6 +262,7 @@ def _load(phone: str) -> Session:
                     branch_id=d.get("branch_id"),
                     proposed_branch_id=d.get("proposed_branch_id"),
                     pending_quote=d.get("pending_quote"),
+                    pending_action=d.get("pending_action"),
                     last_active=d.get("last_active", _now()),
                 )
         except Exception as e:   # corrupt row must never lock a customer out

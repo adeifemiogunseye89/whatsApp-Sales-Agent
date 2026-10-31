@@ -30,6 +30,7 @@ ShopAssist-Chatbot/shop.db
 *.log
 logs/
 .cache/
+ShopAssist-Chatbot/logs/
 
 # ---- IDE / OS ----
 .vscode/
