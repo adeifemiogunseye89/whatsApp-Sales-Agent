@@ -27,6 +27,26 @@ META_API_VERSION = os.getenv("META_API_VERSION", "v21.0")
 # ---- LLM ----
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "6144"))      # context window for the local model
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "1h")       # keep the local model loaded between chats
+
+# ---- Brain: model lanes (Stage 4.1) ----
+# Each lane is "provider:model". Providers: anthropic, openai, groq, gemini,
+# openrouter, mistral, cerebras, ollama. Lanes are tried in this order:
+# primary -> backup -> local. Leave one empty to switch it off.
+LLM_PRIMARY = os.getenv("LLM_PRIMARY", "")                     # e.g. anthropic:claude-haiku-5-5
+LLM_BACKUP = os.getenv("LLM_BACKUP", "")                       # e.g. groq:llama-3.3-70b-versatile
+LLM_LOCAL = os.getenv("LLM_LOCAL", f"ollama:{OLLAMA_MODEL}")   # slow last resort; "" = none
+LLM_TIMEOUT_HOSTED = int(os.getenv("LLM_TIMEOUT_HOSTED", "20"))    # seconds per hosted call
+LLM_TIMEOUT_LOCAL = int(os.getenv("LLM_TIMEOUT_LOCAL", "300"))     # seconds per local call
+LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "300"))
+DAILY_BUDGET_USD = float(os.getenv("DAILY_BUDGET_USD", "0.50"))    # 0 = no cap
+BUDGET_ALERT_PERCENT = int(os.getenv("BUDGET_ALERT_PERCENT", "80"))
+MODEL_TURNS_PER_HOUR = int(os.getenv("MODEL_TURNS_PER_HOUR", "30"))    # per phone
+MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "600"))         # longer messages are cut
+LLM_WARM_UP = os.getenv("LLM_WARM_UP", "0") == "1"                  # load the local model at server start
+LIMITED_MODE_MESSAGE = os.getenv("LIMITED_MODE_MESSAGE",
+                                 "We're a bit busy; the team will reply shortly.")
 
 # ---- Business ----
 DATABASE_PATH = os.getenv("DATABASE_PATH", "shop.db")

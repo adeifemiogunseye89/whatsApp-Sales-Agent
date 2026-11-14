@@ -115,7 +115,10 @@ def search_products(keyword: str) -> str:
     rows = db.search_products(branch["branch_id"], keyword)
     if not rows:
         return f"No products matched '{keyword}' at {branch['name']}. Try a broader term."
-    return f"At {branch['name']}:\n" + "\n".join(
+    session = get_session(_phone())
+    header = "" if session.branch_announced else f"At {branch['name']}:\n"
+    session.branch_announced = True      # name the branch once; quotes and receipts always name it
+    return header + "\n".join(
         f"- {r['product_id']}: {r['name']} — {_money(r['price_kobo'])} "
         f"({r['stock_qty']} in stock)" for r in rows)
 

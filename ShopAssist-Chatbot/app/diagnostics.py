@@ -16,7 +16,8 @@ from app.config import LOG_DIR
 
 
 def new_turn() -> dict:
-    return {"path": "model", "attempts": 0, "rejections": [], "tools": []}
+    return {"path": "model", "attempts": 0, "rejections": [], "tools": [], "lane": None,
+            "model_ms": 0, "in_tokens": 0, "out_tokens": 0, "cost_micro_usd": 0, "lane_errors": []}
 
 
 def record(phone: str, diag: dict, started: float) -> None:

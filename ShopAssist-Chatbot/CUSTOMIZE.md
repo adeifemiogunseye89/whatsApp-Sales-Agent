@@ -20,6 +20,13 @@ Anything you set in `.env` overrides the default in `app/config.py`.
 | `SESSION_TTL_HOURS`, `HISTORY_CAP` | How long an idle chat is remembered, and how many messages are kept. | `24`, `20` |
 | `HANDOFF_HOURS`, `HUMAN_ESCALATION_WEBHOOK` | How long the bot stays silent after handing a chat to a human, and where the alert is posted. | `4`, empty |
 | `LOG_DIR` | Per-turn diagnostics (`turns.jsonl`: metadata only, never customer text). | `logs` |
+| `LLM_PRIMARY`, `LLM_BACKUP`, `LLM_LOCAL` | The bot's brain, tried in this order. Each is `provider:model`. See section 8. | local only |
+| `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, ... | Keys for the providers you use. Never commit a real key. | empty |
+| `DAILY_BUDGET_USD`, `BUDGET_ALERT_PERCENT` | Paid lanes pause for the day at the budget (`0` = no cap); alert at the percentage. | `0.50`, `80` |
+| `MODEL_TURNS_PER_HOUR`, `MAX_MESSAGE_CHARS` | Per phone: model turns per hour, and the longest message the model reads. | `30`, `600` |
+| `LLM_TIMEOUT_HOSTED`, `LLM_TIMEOUT_LOCAL`, `LLM_MAX_OUTPUT_TOKENS` | Seconds to wait for a hosted / local call; longest reply. | `20`, `300`, `300` |
+| `OLLAMA_NUM_CTX`, `OLLAMA_KEEP_ALIVE`, `LLM_WARM_UP` | Local model memory window, how long it stays loaded, and whether to load it at server start. | `6144`, `1h`, off |
+| `LIMITED_MODE_MESSAGE` | What customers see when no brain is available. | We're a bit busy; the team will reply shortly. |
 
 ## 2. Branches, products and per-branch prices: `app/db.py`
 Three seed lists near the top of the file. Seeding only runs on an EMPTY database,
@@ -65,6 +72,26 @@ Run from the `ShopAssist-Chatbot` folder. None of them needs Ollama or WhatsApp.
 | `python tests/test_stage3.py` | `22/22 passed` |
 | `python tests/test_stage3_1.py` | `19/19 passed` |
 | `python tests/test_stage4.py` | `35/35 passed` |
+| `python tests/test_stage4_1.py` | `43/43 passed` |
 
 ## 7. Eval suite: `eval/test_queries.py`
 Replace `QUERIES` with your real customer phrases; add assertions on tool calls and response text to turn it into a regression suite.
+
+## 8. Choosing the brain (Stage 4.1)
+The model is a setting. Lanes are tried in order: primary -> backup -> local.
+
+Quick start with a hosted model (about $5 prepaid lasts thousands of turns):
+1. Create an account with a provider and load a small prepaid amount. Prepaid credit means the account can never spend more than you loaded.
+2. Put the key in `.env`, for example `ANTHROPIC_API_KEY=...` (never commit it).
+3. Install the matching package once: `pip install langchain-anthropic` (or `langchain-openai` for groq, gemini, openrouter, mistral, cerebras, openai).
+4. Set the lane, for example `LLM_PRIMARY=anthropic:claude-haiku-5-5`. Keep `LLM_LOCAL` as the slow last resort, or set it empty.
+5. Start `python -m chat`. It prints each lane with its price and whether its key is found. Each reply shows which lane answered, the model time and the cost.
+
+Rules to know:
+- **Price.** `claude-haiku-5-5` is built in. For any other hosted model set `LLM_PRICE_PRIMARY=input,output` (USD per million tokens, `0,0` for a free tier). An unknown price is assumed to be expensive on purpose, so spend is never hidden.
+- **Budget.** At `DAILY_BUDGET_USD` paid lanes pause until tomorrow (Lagos time); the local lane still works. You get an alert once a day at `BUDGET_ALERT_PERCENT` and at the cap (console, plus `HUMAN_ESCALATION_WEBHOOK` if set).
+- **Failures.** A slow hosted lane is retried once, then the next lane is used. A bad key or no credit pauses that lane for 30 minutes. If every lane fails, customers get `LIMITED_MODE_MESSAGE`; YES/NO answers, quotes and naming an order ID still work.
+- **Abuse.** `MODEL_TURNS_PER_HOUR` limits one phone; longer messages are cut to `MAX_MESSAGE_CHARS`. This stops one number from draining the budget. It does not stop someone with many numbers: the daily budget is the backstop.
+- **Privacy.** Hosted lanes send the chat text (no phone numbers) to the provider. Use free tiers for demos with fake data only, and read each provider's data terms before real customers.
+- **Local tuning.** If the local lane is first, `LLM_WARM_UP=1` loads the model at server start. `OLLAMA_NUM_CTX` caps the memory window (a smaller window uses less memory).
+- `python -m chat --quiet` hides the developer lines.

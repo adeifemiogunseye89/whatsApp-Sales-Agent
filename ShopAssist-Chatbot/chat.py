@@ -1,21 +1,25 @@
 """Live chat with your bot — the interactive version of the eval test.
 
-Run from the project root:   python -m chat
+Run from the project root:   python -m chat            (add --quiet to hide the developer lines)
 Type your message and press Enter. The bot replies.
 Type  quit  (or q) to exit,  reset  to start a fresh conversation.
 """
-from app.agent import run_agent
-from app.config import OLLAMA_MODEL
+import sys
+
+from app.agent import router, run_agent
 from app.db import init_db, open_orders_for_phone
 from app.session import clear, get_session
 
 PHONE = "live-user"   # pretend phone number for your test session
+QUIET = "--quiet" in sys.argv   # hide the [state] / [turn] developer lines
 
 
 def main():
     init_db()   # create the notebook (tables + your seed data) if missing
-    print(f"ShopAssist is online (model: {OLLAMA_MODEL}). "
-          "Type 'quit' to exit, 'reset' to start over.\n")
+    print("ShopAssist is online. Model lanes:")
+    for line in router.describe():
+        print(f"  - {line}")
+    print("Type 'quit' to exit, 'reset' to start over.\n")
     while True:
         try:
             user_text = input("You: ").strip()
@@ -43,16 +47,20 @@ def main():
             print("Bot: [thinking came back empty — please repeat that]\n")
             continue
         print(f"Bot: {reply}\n")
+        if QUIET:
+            continue
         st = get_session(PHONE)   # dev-only: the truth, next to what the model said
         print(f"      [state: branch={st.branch_id} proposed={st.proposed_branch_id} "
               f"quote={st.pending_quote['id'] if st.pending_quote else None} "
               f"action={st.pending_action['type'] if st.pending_action else None} "
               f"open={len(open_orders_for_phone(PHONE))} handoff={st.handoff_active}]")
-        t = st.last_turn   # dev-only: how hard did the model have to be corrected?
+        t = st.last_turn   # dev-only: which brain answered, how fast, at what cost?
         if t:
-            print(f"      [turn: path={t.get('path')} attempts={t.get('attempts')} "
-                  f"rejected={','.join(t.get('rejections', [])) or '-'} "
-                  f"tools={','.join(t.get('tools', [])) or '-'} {t.get('ms')}ms]\n")
+            cost = (t.get("cost_micro_usd") or 0) / 1_000_000
+            print(f"      [turn: path={t.get('path')} lane={t.get('lane') or '-'} "
+                  f"attempts={t.get('attempts')} rejected={','.join(t.get('rejections', [])) or '-'} "
+                  f"tools={','.join(t.get('tools', [])) or '-'} model={t.get('model_ms', 0)}ms "
+                  f"total={t.get('ms')}ms cost=${cost:.5f}]\n")
 
 
 if __name__ == "__main__":

@@ -9,8 +9,8 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.agent import run_agent
-from app.config import SWEEP_MINUTES, WHATSAPP_VERIFY_TOKEN
+from app.agent import router, run_agent
+from app.config import LLM_WARM_UP, SWEEP_MINUTES, WHATSAPP_VERIFY_TOKEN
 from app.db import init_db, release_expired
 from app.session import purge_expired
 from app.whatsapp import send_whatsapp
@@ -41,6 +41,10 @@ async def startup() -> None:
     purge_expired()   # forget chats idle past SESSION_TTL_HOURS
     sweep_once()      # release anything that expired while the server was off
     app.state.sweeper = asyncio.create_task(sweep_forever())
+    for line in router.describe():
+        print(f"[llm] {line}")
+    if LLM_WARM_UP:                          # opt-in: loading a local model can take minutes
+        app.state.warm = asyncio.create_task(asyncio.to_thread(router.warm_up))
 
 
 # ---------- Meta webhook verification ----------

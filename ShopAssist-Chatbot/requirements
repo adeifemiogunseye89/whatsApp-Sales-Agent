@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+langgraph>=0.2
+langchain-ollama>=0.2
+pydantic>=2.7
+
+# Brain lanes (Stage 4.1): install only what you use
+# langchain-anthropic>=0.3     # LLM_PRIMARY=anthropic:...
+# langchain-openai>=0.2        # openai, groq, gemini, openrouter, mistral, cerebras

@@ -269,6 +269,7 @@ def test_n4_alert_payload_contains_context():
 # ---------------- end of turn + N5 ----------------
 def test_end_of_turn_history_is_persisted_and_starts_with_human():
     A, fake = _install_fake_agent()
+    A.MODEL_TURNS_PER_HOUR = 10_000            # this test is about history, not the rate limit
     p = "2348100000016"; S.clear(p)
     for i in range(40):                       # long chat: forces trimming
         assert A.run_agent(p, f"msg {i}") == "Hello!"

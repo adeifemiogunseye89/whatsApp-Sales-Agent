@@ -1,4 +1,4 @@
-"""Stage 3.1 verification: code owns the branch step; the model cannot lie about branches.
+cl"""Stage 3.1 verification: code owns the branch step; the model cannot lie about branches.
 
 Found in a live chat (qwen2.5:14b): the bot invented a 'Victoria Island Branch' and
 three addresses, said "we've set Victoria Island Branch" while no branch was set,

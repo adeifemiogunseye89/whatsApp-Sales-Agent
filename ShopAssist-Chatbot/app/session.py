@@ -52,6 +52,8 @@ class Session:
     outbox: str | None = field(default=None, repr=False)   # code-written reply for this turn (never saved)
     branch_just_confirmed: bool = field(default=False, repr=False)   # this turn only (never saved)
     last_turn: dict = field(default_factory=dict, repr=False)        # diagnostics (never saved)
+    model_turns: list = field(default_factory=list)                  # recent model-turn times (rate limit)
+    branch_announced: bool = field(default=False, repr=False)        # branch named once per lock (never saved)
     last_active: float = field(default_factory=lambda: _now())
 
     def __post_init__(self):
@@ -127,6 +129,7 @@ class Session:
         self.proposed_branch_id = None
         self.pending_quote = None   # a quote for the old branch is void
         self.pending_action = None
+        self.branch_announced = False
         self.cart.clear()          # a different branch means different prices/stock
         self.save()
 
@@ -174,6 +177,15 @@ class Session:
         (not when a branch yes/no is the open question)."""
         return bool(self.pending_quote) and not self.proposed_branch_id
 
+    def note_model_turn(self) -> None:
+        """Remember that this phone just used the model (for the per-hour limit)."""
+        now = _now()
+        self.model_turns = [t for t in self.model_turns if now - t < 3600][-100:] + [now]
+
+    def model_turns_last_hour(self) -> int:
+        now = _now()
+        return sum(1 for t in self.model_turns if now - t < 3600)
+
     def set_outbox(self, text: str) -> None:
         self.outbox = text   # transient: cleared every turn, never saved
 
@@ -207,6 +219,7 @@ class Session:
             "proposed_branch_id": self.proposed_branch_id,
             "pending_quote": self.pending_quote,
             "pending_action": self.pending_action,
+            "model_turns": self.model_turns,
             "last_active": self.last_active,
         }, default=str)   # default=str: an odd metadata value must never crash a save
 
@@ -263,6 +276,7 @@ def _load(phone: str) -> Session:
                     proposed_branch_id=d.get("proposed_branch_id"),
                     pending_quote=d.get("pending_quote"),
                     pending_action=d.get("pending_action"),
+                    model_turns=d.get("model_turns", []),
                     last_active=d.get("last_active", _now()),
                 )
         except Exception as e:   # corrupt row must never lock a customer out

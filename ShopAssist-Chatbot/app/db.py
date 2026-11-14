@@ -107,6 +107,20 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_branch_code
     ON orders(branch_id, pickup_code);
 CREATE INDEX IF NOT EXISTS ix_orders_phone ON orders(customer_phone, created_at);
+CREATE TABLE IF NOT EXISTS llm_usage (
+    day             TEXT NOT NULL,
+    lane            TEXT NOT NULL,
+    calls           INTEGER NOT NULL DEFAULT 0,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    cost_micro_usd  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, lane)
+);
+CREATE TABLE IF NOT EXISTS llm_alerts (
+    day  TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    PRIMARY KEY (day, kind)
+);
 CREATE TABLE IF NOT EXISTS sessions (
     phone      TEXT PRIMARY KEY,
     state_json TEXT NOT NULL,
@@ -433,6 +447,41 @@ def amend_order_db(order_id: str, phone: str, items: list[dict], totals: dict) -
         conn.rollback()
         raise
     return get_order_for_phone(order_id, phone)
+
+
+# ---------- model usage and operator alerts (Stage 4.1) ----------
+# Cost is kept in MICRO-dollars (integer): price per million tokens x tokens = micro-dollars.
+
+def add_llm_usage(day: str, lane: str, calls: int, input_tokens: int,
+                  output_tokens: int, cost_micro_usd: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO llm_usage (day, lane, calls, input_tokens, output_tokens, cost_micro_usd)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(day, lane) DO UPDATE SET
+                   calls = calls + excluded.calls,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cost_micro_usd = cost_micro_usd + excluded.cost_micro_usd""",
+            (day, lane, calls, input_tokens, output_tokens, cost_micro_usd))
+
+
+def llm_spent_micro(day: str) -> int:
+    row = get_conn().execute(
+        "SELECT COALESCE(SUM(cost_micro_usd), 0) AS c FROM llm_usage WHERE day = ?", (day,)).fetchone()
+    return int(row["c"])
+
+
+def llm_usage_rows(day: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM llm_usage WHERE day = ? ORDER BY lane", (day,)).fetchall()
+
+
+def alert_once(day: str, kind: str) -> bool:
+    """True the FIRST time (day, kind) is seen, so an operator alert is sent once a day."""
+    with get_conn() as conn:
+        cur = conn.execute("INSERT OR IGNORE INTO llm_alerts (day, kind) VALUES (?, ?)", (day, kind))
+        return cur.rowcount == 1
 
 
 # ---------- session persistence (Stage 2) ----------

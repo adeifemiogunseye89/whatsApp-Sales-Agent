@@ -1,4 +1,4 @@
-"""LangGraph ReAct agent on local Ollama (Update 1: multi-branch).
+"""LangGraph ReAct agent behind the model-lane router (Stage 4.1: hosted or local brain).
 
 Defenses for weak local models:
 1. Leak catcher: model prints a tool call as text -> we execute it ourselves.
@@ -16,12 +16,11 @@ import time
 import uuid
 
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_ollama import ChatOllama
-from langgraph.prebuilt import create_react_agent
 
 from app import db as _db
-from app import branches, diagnostics, guards, orders
-from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
+from app import branches, budget, diagnostics, guards, llm, orders
+from app import tools as _tools
+from app.config import LIMITED_MODE_MESSAGE, MAX_MESSAGE_CHARS, MODEL_TURNS_PER_HOUR
 from app.session import append_message, get_session
 from app.textfmt import to_whatsapp
 from app.tools import ALL_TOOLS, set_context
@@ -45,6 +44,7 @@ LOCATION FIRST (the golden rule):
 BRANCH RULES:
 - All prices and stock you mention come from the CONFIRMED branch only. Never mix branches.
 - If the confirmed branch is out of something, say so and offer to look at another branch (set_pickup_location with that branch name).
+- The customer already confirmed the branch: do not repeat its name in your answers unless they ask.
 
 ORDERS & TRACKING:
 - We do PAY-ON-PICKUP only. You never collect money in the chat.
@@ -64,14 +64,10 @@ STRICT RULES:
 6. NEVER say a pickup branch is set, locked or confirmed. Only the system does that.
 """
 
-# qwen3 "thinks out loud" by default which breaks tool calling -> switch that
-# off ONLY for qwen3 models. Other models don't understand this option.
-_THINK_OFF = OLLAMA_MODEL.lower().startswith("qwen3")
-
-_llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL,
-                  temperature=0, **({"think": False} if _THINK_OFF else {}))
-
-agent = create_react_agent(_llm, ALL_TOOLS, prompt=SYSTEM_PROMPT)
+# The brain: model lanes (hosted -> backup -> local), each built lazily on first use.
+# See app/llm.py. `agent` keeps its old name so tests can swap in a fake.
+router = llm.LaneRouter(prompt=SYSTEM_PROMPT, tools=ALL_TOOLS)
+agent = router
 
 _TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
@@ -129,6 +125,52 @@ def _with_final_reply(msgs: list, text: str) -> list:
     return msgs
 
 
+RATE_LIMIT_TEXT = "You're sending messages very quickly. Please wait a few minutes and try again."
+
+
+def _forget_unanswered(session) -> None:
+    """Drop the customer's message when no reply was produced, so history stays clean."""
+    if session.messages and getattr(session.messages[-1], "type", "") == "human":
+        session.messages.pop()
+
+
+def _note_use(router_like, diag: dict) -> None:
+    """Copy what the last model call used (lane, tokens, cost, speed) into the turn's diagnostics."""
+    use = getattr(router_like, "last", None)
+    if use is None:
+        return
+    diag["lane"] = use.lane.label
+    diag["model_ms"] += use.ms
+    diag["in_tokens"] += use.in_tokens
+    diag["out_tokens"] += use.out_tokens
+    diag["cost_micro_usd"] += use.cost_micro
+    for key, val in (("load_ms", use.load_ms), ("prefill_ms", use.prefill_ms), ("decode_ms", use.decode_ms)):
+        if val:
+            diag[key] = diag.get(key, 0) + val
+    for label, kind in getattr(router_like, "last_errors", []):
+        diag["lane_errors"].append(f"{label}:{kind}")
+
+
+def _limited_body(text: str) -> str:
+    """No model is available: code can still show an order the customer names by its ID."""
+    m = re.search(r"ORD-[A-Z0-9]{4,}", text.upper())
+    if m:
+        out = _tools.track_order.invoke({"order_id": m.group(0)})
+        if not out.startswith("No orders"):
+            return "Here's what I can see:\n" + out
+    return LIMITED_MODE_MESSAGE
+
+
+def _limited(session, phone: str, text: str, diag: dict, err, lead) -> str:
+    diag["path"] = "limited"
+    diag["lane_errors"] += [f"{a}:{b}" for a, b in err.tried]
+    _forget_unanswered(session)
+    budget.notify_operator("limited_mode", "No model lane could answer, so customers are getting "
+                           "the limited-mode message. Check the model lanes and the budget.")
+    body = _limited_body(text)
+    return f"{lead}\n\n{body}" if lead else body
+
+
 def run_agent(phone: str, text: str) -> str | None:
     """One customer turn, with per-turn diagnostics (path, model attempts, guard
     rejections, tools, time - never the customer's words). See _run_agent."""
@@ -158,10 +200,13 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
                                      guard are NEVER saved to chat history."""
     set_context(phone)
     session = get_session(phone)
+    clipped = text[:MAX_MESSAGE_CHARS]         # a very long message is cut before the model sees it
+    if len(text) > len(clipped):
+        diag["truncated"] = True
     if session.handoff_active:
         # A human owns this chat: record the message, stay silent.
         diag["path"] = "handoff"
-        append_message(session, "user", text)
+        append_message(session, "user", clipped)
         session.save()
         return None
     try:
@@ -170,7 +215,7 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
         print(f"[release_expired error] {e!r}")
     session.take_outbox()                      # clear anything left from a failed turn
     session.branch_just_confirmed = False
-    append_message(session, "user", text)
+    append_message(session, "user", clipped)
 
     lead = None   # code-written opening line, e.g. "Pickup branch confirmed: ..."
     if session.branch_awaiting_reply():
@@ -206,6 +251,13 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
             session.save()
             return reply
 
+    if lead is None:                           # (after a code-confirmed branch the model only resumes)
+        if session.model_turns_last_hour() >= MODEL_TURNS_PER_HOUR:
+            diag["path"] = "rate_limited"
+            _forget_unanswered(session)
+            return RATE_LIMIT_TEXT
+        session.note_model_turn()
+
     def shown(body: str) -> str:
         return f"{lead}\n\n{body}" if lead else body
 
@@ -215,7 +267,11 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
     msgs = turn_base
     for _ in range(4):
         diag["attempts"] += 1
-        result = agent.invoke({"messages": msgs})
+        try:
+            result = agent.invoke({"messages": msgs})
+        except llm.LaneUnavailable as e:       # every lane failed or the budget is used up
+            return _limited(session, phone, text, diag, e, lead)
+        _note_use(agent, diag)
         new_msgs = result["messages"][len(msgs):]
         msgs = result["messages"]
 
