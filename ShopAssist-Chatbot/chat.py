@@ -19,7 +19,10 @@ def main():
     print("ShopAssist is online. Model lanes:")
     for line in router.describe():
         print(f"  - {line}")
-    print("Type 'quit' to exit, 'reset' to start over.\n")
+    for r in router.prepare():                 # load now, so the first message is not slow
+        print(f"  loaded {r['lane']} in {r['ms'] / 1000:.1f}s" if r["ok"] else
+              f"  COULD NOT LOAD {r['lane']}: {r['error']}  (run: python -m check_lanes)")
+    print("Type 'quit' to exit, 'reset' to start over. (Problems with a lane? Run: python -m check_lanes)\n")
     while True:
         try:
             user_text = input("You: ").strip()

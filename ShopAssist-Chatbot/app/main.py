@@ -43,6 +43,9 @@ async def startup() -> None:
     app.state.sweeper = asyncio.create_task(sweep_forever())
     for line in router.describe():
         print(f"[llm] {line}")
+    for r in await asyncio.to_thread(router.prepare):     # pay the start-up cost now, not on the first customer
+        print(f"[llm] loaded {r['lane']} in {r['ms']}ms" if r["ok"] else
+              f"[llm] COULD NOT LOAD {r['lane']}: {r['error']}  (run: python -m check_lanes)")
     if LLM_WARM_UP:                          # opt-in: loading a local model can take minutes
         app.state.warm = asyncio.create_task(asyncio.to_thread(router.warm_up))
 

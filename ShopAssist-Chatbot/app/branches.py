@@ -11,6 +11,10 @@ on the customer's behalf.
 from app import db
 
 
+def ask_place_text() -> str:
+    return "Which city or area will the pickup happen in?"
+
+
 def none_text(place: str) -> str:
     return (f"Sorry, I couldn't find a branch for '{place}'. We currently serve: "
             f"{', '.join(db.served_cities())}. Which city or area works for you?")

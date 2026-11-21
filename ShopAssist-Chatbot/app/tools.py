@@ -11,7 +11,9 @@ Stage 3: the model can only PREPARE a quote (get_price_quote). It cannot place
 an order; app/orders.py does that after the customer answers YES.
 """
 import contextvars
+import difflib
 import json
+import re
 
 import httpx
 from langchain_core.tools import tool
@@ -79,15 +81,90 @@ def _resolve(branch_id: str, items: list[CartItem],
 
 # ---------- branch selection (writes the session lock) ----------
 
+JUST_CONFIRMED = ("The customer has JUST confirmed their branch. Do not call set_pickup_location now; "
+                  "answer their earlier request with the shelf tools.")
+
+_PLACE_STOP = {"branch", "branches", "city", "area", "areas", "location", "place", "pickup", "the",
+               "and", "for", "near", "nearest", "any", "your", "please"}
+_ORDINALS = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2, "last": -1}
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _human_texts(session, n: int = 4) -> list[str]:
+    out = []
+    for m in session.messages:
+        if getattr(m, "type", "") == "human":
+            c = getattr(m, "content", "")
+            out.append(c if isinstance(c, str) else str(c))
+    return out[-n:]
+
+
+def _grounded(session, place: str) -> bool:
+    """Did the CUSTOMER say something close to this place in their recent messages?
+    Fuzzy on purpose, so a model that corrects a typo ("vitoria" -> "Victoria") still passes,
+    while a placeholder ("city or area") or an example value the model made up does not."""
+    wanted = [w for w in _words(place) if len(w) >= 3 and w not in _PLACE_STOP]
+    if not wanted:
+        return False
+    said = {w for t in _human_texts(session) for w in _words(t) if len(w) >= 3}
+    return any(difflib.SequenceMatcher(None, w, s).ratio() >= 0.8 for w in wanted for s in said)
+
+
+def _selection_index(text: str, n: int) -> int | None:
+    """"2", "option 2", "the second one", "last": a SHORT reply that picks from a list.
+    A sentence that merely contains a digit ("I have 2 kids...") is not a pick."""
+    words = _words(text)
+    if not words or len(words) > 4:
+        return None
+    digits = [w for w in words if re.fullmatch(r"[1-9]", w)]
+    if len(digits) == 1:
+        i = int(digits[0]) - 1
+    else:
+        hit = [w for w in words if w in _ORDINALS]
+        if not hit:
+            return None
+        i = _ORDINALS[hit[0]]
+    if i == -1:
+        i = n - 1
+    return i if 0 <= i < n else None
+
+
+def _selected_from_list(session, place: str) -> bool:
+    """The customer answered a branch list with "2" or "the second one": the place the model
+    passes must be exactly that branch."""
+    listed = session.listed_branch_ids
+    humans = _human_texts(session, 1)
+    if not listed or not humans:
+        return False
+    i = _selection_index(humans[-1], len(listed))
+    if i is None:
+        return False
+    found = db.find_branches(place)
+    return len(found) == 1 and found[0]["branch_id"] == listed[i]
+
+
 @tool
 def set_pickup_location(place: str) -> str:
-    """Find pickup branches for a city, area or branch name (e.g. 'Abuja',
-    'Lekki', 'Ikeja Branch'). Call this whenever the customer names a place,
-    asks which branches exist, or wants to switch branch. The SYSTEM shows the
+    """Look up pickup branches for a place the CUSTOMER typed: a city, an area or a branch name.
+    Use only words from the customer's own messages, never an example or a guess. Call it when
+    they name a place, ask which branches exist, or want to switch branch. The SYSTEM shows the
     customer the result and handles their yes/no itself."""
-    matches = db.find_branches(place)
     session = get_session(_phone())
-    session.propose_branch(None)
+    if session.model_turn_active:                  # the MODEL is calling: check it, never trust it
+        if session.branch_just_confirmed:
+            return JUST_CONFIRMED
+        if not (_grounded(session, place) or _selected_from_list(session, place)):
+            if session.branch_id:
+                return ("The customer did not name a new place, so their branch stays as it is. "
+                        "Continue with their request.")
+            session.set_outbox(branches.ask_place_text())
+            return BRANCH_SHOWN
+    matches = db.find_branches(place)
+    session.listed_branch_ids = [b["branch_id"] for b in matches] if len(matches) > 1 else []
+    session.propose_branch(None)                   # (saves)
     if not matches:
         session.set_outbox(branches.none_text(place))
         return BRANCH_SHOWN

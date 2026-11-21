@@ -37,7 +37,7 @@ TOOLS:
 LOCATION FIRST (the golden rule):
 - Before any prices, stock checks, quotes or orders, a pickup branch must be CONFIRMED. The system tracks this itself: shelf tools reply NO_BRANCH if none is confirmed.
 - If the customer wants prices, wants to buy or reserve, and no branch is confirmed, ask: "Which city or area will the pickup happen in?"
-- Call set_pickup_location with their answer. The SYSTEM then shows the customer the branch (or the list of branches) and asks them to reply YES or NO itself. The SYSTEM confirms the branch; you cannot.
+- Call set_pickup_location only with the place the customer actually typed (never with words from these instructions). The SYSTEM then shows the customer the branch (or the list of branches) and asks them to reply YES or NO itself. The SYSTEM confirms the branch; you cannot.
 - NEVER write branch names or addresses yourself. They come only from set_pickup_location. If the customer asks which branches exist, call set_pickup_location with their city or area.
 - Once confirmed, do not ask again — unless the customer asks to switch branch; then call set_pickup_location again.
 
@@ -147,8 +147,9 @@ def _note_use(router_like, diag: dict) -> None:
     for key, val in (("load_ms", use.load_ms), ("prefill_ms", use.prefill_ms), ("decode_ms", use.decode_ms)):
         if val:
             diag[key] = diag.get(key, 0) + val
-    for label, kind in getattr(router_like, "last_errors", []):
-        diag["lane_errors"].append(f"{label}:{kind}")
+    timings = getattr(router_like, "last_timings", [])
+    for i, (label, kind) in enumerate(getattr(router_like, "last_errors", [])):
+        diag["lane_errors"].append(f"{label}:{kind}" + (f":{timings[i]}ms" if i < len(timings) else ""))
 
 
 def _limited_body(text: str) -> str:
@@ -161,9 +162,12 @@ def _limited_body(text: str) -> str:
     return LIMITED_MODE_MESSAGE
 
 
-def _limited(session, phone: str, text: str, diag: dict, err, lead) -> str:
+def _limited(session, phone: str, text: str, diag: dict, err, lead, snap) -> str:
     diag["path"] = "limited"
-    diag["lane_errors"] += [f"{a}:{b}" for a, b in err.tried]
+    timings = getattr(err, "timings", [])
+    diag["lane_errors"] += [f"{a}:{b}" + (f":{timings[i]}ms" if i < len(timings) else "")
+                            for i, (a, b) in enumerate(err.tried)]
+    session.restore(snap)                      # undo what the failed attempt's tools did
     _forget_unanswered(session)
     budget.notify_operator("limited_mode", "No model lane could answer, so customers are getting "
                            "the limited-mode message. Check the model lanes and the budget.")
@@ -182,6 +186,7 @@ def run_agent(phone: str, text: str) -> str | None:
         diag["path"] = "error"
         raise
     finally:
+        get_session(phone).model_turn_active = False
         diagnostics.record(phone, diag, started)
 
 
@@ -265,12 +270,14 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
     # Show the model the system's state, right before the customer's message.
     turn_base = history[:-1] + [session.state_message()] + history[-1:]
     msgs = turn_base
+    snap = session.snapshot()                  # what the model's tools may change: undone if the turn fails
+    session.model_turn_active = True           # (reset in run_agent's finally)
     for _ in range(4):
         diag["attempts"] += 1
         try:
-            result = agent.invoke({"messages": msgs})
+            result = agent.invoke({"messages": msgs, "before_retry": lambda: session.restore(snap)})
         except llm.LaneUnavailable as e:       # every lane failed or the budget is used up
-            return _limited(session, phone, text, diag, e, lead)
+            return _limited(session, phone, text, diag, e, lead, snap)
         _note_use(agent, diag)
         new_msgs = result["messages"][len(msgs):]
         msgs = result["messages"]

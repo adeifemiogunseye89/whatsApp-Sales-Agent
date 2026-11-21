@@ -6,7 +6,7 @@ a brain that answers in seconds, costs almost nothing and survives a provider ou
 How it works
   * Up to three LANES, each "provider:model", tried in order:  primary -> backup -> local
       LLM_PRIMARY=anthropic:claude-haiku-5-5      (paid, fast)
-      LLM_BACKUP=groq:llama-3.3-70b-versatile     (a different provider)
+      LLM_BACKUP=groq:openai/gpt-oss-120b         (a different provider; free tiers have low limits)
       LLM_LOCAL=ollama:llama3.1:8b                (free but slow: last resort)
   * Hosted lanes get a short timeout and one retry; then the next lane is used.
   * A lane that fails with a bad key / no credit / rate limit is paused for a while
@@ -16,6 +16,7 @@ How it works
   * The guards in agent.py apply to every lane, whatever model is behind it.
 """
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -40,6 +41,10 @@ BASE_URL = {"groq": "https://api.groq.com/openai/v1",
             "cerebras": "https://api.cerebras.ai/v1"}
 
 
+SHORT_WAIT_SECONDS = 6.0     # a rate limit this short is waited out inside the turn, then retried once
+MAX_REST_SECONDS = 120       # the longest a rate-limited lane is rested
+
+
 class MissingKey(Exception):
     pass
 
@@ -49,10 +54,11 @@ class MissingPackage(Exception):
 
 
 class LaneUnavailable(Exception):
-    """No lane could answer. `tried` is [(lane label, reason), ...]."""
-    def __init__(self, tried):
+    """No lane could answer. `tried` is [(lane label, reason), ...]; `timings` the ms each attempt took."""
+    def __init__(self, tried, timings=None):
         super().__init__("no model lane available: " + (", ".join(f"{a}={b}" for a, b in tried) or "none configured"))
         self.tried = tried
+        self.timings = list(timings or [])
 
 
 @dataclass(frozen=True)
@@ -158,21 +164,47 @@ def make_chat_model(lane: Lane):
     return ChatOpenAI(**_supported_kwargs(ChatOpenAI, common))
 
 
+_BILLING_PHRASES = ("credit balance is too low", "insufficient_quota", "exceeded your current quota",
+                    "payment required", "billing_hard_limit", "out of credits")
+
+
 def classify(e: Exception) -> str:
-    """auth | billing | rate_limit | transient | other"""
+    """auth | billing | rate_limit | transient | other
+
+    Order matters. A provider's 429 message often ends with an upgrade link that contains
+    the word "billing" (Groq's does), so billing is decided only by SPECIFIC phrases or 402,
+    and a plain rate limit is never mistaken for a payment problem."""
     name = type(e).__name__.lower()
     text = str(e).lower()
     status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
     if status in (401, 403) or "authentication" in name or "invalid api key" in text:
         return "auth"
-    if status == 402 or "credit balance" in text or "insufficient_quota" in text or "billing" in text:
+    if status == 402 or any(p in text for p in _BILLING_PHRASES):
         return "billing"
-    if status == 429 or "ratelimit" in name or "rate limit" in text:
+    if status == 429 or "ratelimit" in name or "rate limit" in text or "rate_limit" in text:
         return "rate_limit"
     if (isinstance(status, int) and status >= 500) or "timeout" in name or "timed out" in text \
             or "connect" in name or "overloaded" in text or isinstance(e, (TimeoutError, ConnectionError)):
         return "transient"
     return "other"
+
+
+def retry_after(e: Exception) -> float | None:
+    """How long the provider asked us to wait, in seconds (header or message), else None."""
+    headers = getattr(getattr(e, "response", None), "headers", None)
+    try:
+        if headers and headers.get("retry-after"):
+            return float(headers.get("retry-after"))
+    except (TypeError, ValueError, AttributeError):
+        pass
+    text = str(e).lower()
+    m = re.search(r"try again in (\d+(?:\.\d+)?)\s*ms", text)            # milliseconds first
+    if m:
+        return float(m.group(1)) / 1000
+    m = re.search(r"try again in (?:(\d+)m(?!s))?\s*(?:(\d+(?:\.\d+)?)s)?", text)
+    if m and (m.group(1) or m.group(2)):
+        return int(m.group(1) or 0) * 60 + float(m.group(2) or 0)
+    return None
 
 
 def fold_state_note(msgs: list) -> list:
@@ -269,7 +301,11 @@ class LaneRouter:
         return self._graphs[lane.label]
 
     # ----- failures -----
-    def _failed(self, lane: Lane, kind: str, err: Exception) -> None:
+    @property
+    def last_timings(self) -> list:
+        return getattr(self._tl, "timings", [])
+
+    def _failed(self, lane: Lane, kind: str, err: Exception, wait: float | None = None) -> None:
         label, now = lane.label, self._clock()
         print(f"[llm] {label} failed ({kind}): {err!r}")
         if kind in ("auth", "billing"):
@@ -277,20 +313,37 @@ class LaneRouter:
             budget.notify_operator(f"lane_{kind}:{label}",
                                    f"Model lane {label} stopped ({kind}). Check its API key and credit.")
         elif kind == "rate_limit":
-            self._down_until[label] = now + 60
+            rest = 60.0 if wait is None else min(max(wait + 1.0, 2.0), MAX_REST_SECONDS)
+            self._down_until[label] = now + rest
         elif kind == "transient":
             self._fails[label] = self._fails.get(label, 0) + 1
             if self._fails[label] >= 3:
                 self._down_until[label] = now + 60
                 self._fails[label] = 0
 
+    @staticmethod
+    def _run_hook(hook) -> None:
+        if hook:
+            try:
+                hook()
+            except Exception as e:                           # an undo hook must never break the turn
+                print(f"[llm] before_retry hook failed: {e!r}")
+
     # ----- the call -----
     def invoke(self, inp: dict, config=None) -> dict:
+        """inp["messages"]: the conversation. inp["before_retry"] (optional): called before every
+        attempt that follows a failure, so the caller can undo side effects a half-finished
+        attempt left behind (tools may already have run)."""
         msgs = list(inp["messages"])
-        self._tl.last, self._tl.errors = None, []
+        before_retry = inp.get("before_retry")
+        self._tl.last, self._tl.errors, self._tl.timings = None, [], []
         tried: list[tuple[str, str]] = []
+        timings: list[int] = []
         for lane in self.available_lanes():
+            waited = False
             for attempt in range(2 if lane.hosted else 1):
+                if tried:
+                    self._run_hook(before_retry)
                 started = self._clock()
                 shaped = shape_for_lane(lane, msgs)
                 try:
@@ -298,20 +351,41 @@ class LaneRouter:
                     result = graph.invoke({"messages": shaped}, config) if config else graph.invoke({"messages": shaped})
                 except Exception as e:                       # classify, then retry or move on
                     kind = classify(e)
-                    self._failed(lane, kind, e)
+                    wait = retry_after(e) if kind == "rate_limit" else None
+                    self._failed(lane, kind, e, wait)
                     tried.append((lane.label, kind))
-                    if kind != "transient":
-                        break
-                    self._sleep(0.5)
-                    continue
+                    timings.append(int((self._clock() - started) * 1000))
+                    if kind == "transient":
+                        self._sleep(0.5)
+                        continue
+                    if kind == "rate_limit" and wait is not None and wait <= SHORT_WAIT_SECONDS and not waited:
+                        waited = True                        # a few seconds: wait it out and retry once
+                        self._sleep(wait + 0.3)
+                        self._down_until.pop(lane.label, None)
+                        continue
+                    break
                 self._fails[lane.label] = 0
                 ms = int((self._clock() - started) * 1000)
                 new = list(result["messages"])[len(shaped):]
                 self._tl.last = self._usage(lane, shaped, new, ms)
-                self._tl.errors = tried
+                self._tl.errors, self._tl.timings = tried, timings
                 return {"messages": msgs + new}              # indexes stay valid for the caller
-        self._tl.errors = tried
-        raise LaneUnavailable(tried)
+        self._tl.errors, self._tl.timings = tried, timings
+        raise LaneUnavailable(tried, timings)
+
+    def prepare(self) -> list[dict]:
+        """Load every available lane NOW (import its package, build its graph) so the first
+        customer does not pay that start-up cost. Never raises."""
+        out = []
+        for lane in self.available_lanes():
+            started = self._clock()
+            try:
+                self._graph(lane)
+                ok, err = True, ""
+            except Exception as e:
+                ok, err = False, f"{type(e).__name__}: {e}"
+            out.append({"lane": lane.label, "ok": ok, "ms": int((self._clock() - started) * 1000), "error": err})
+        return out
 
     def _usage(self, lane: Lane, shaped: list, new: list, ms: int) -> Use:
         i, o, load, pre, dec = usage_from(new)

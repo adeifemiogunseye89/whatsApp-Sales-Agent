@@ -73,6 +73,7 @@ Run from the `ShopAssist-Chatbot` folder. None of them needs Ollama or WhatsApp.
 | `python tests/test_stage3_1.py` | `19/19 passed` |
 | `python tests/test_stage4.py` | `35/35 passed` |
 | `python tests/test_stage4_1.py` | `43/43 passed` |
+| `python tests/test_stage4_2.py` | see the Stage 4.2 note (the count is printed on the last line) |
 
 ## 7. Eval suite: `eval/test_queries.py`
 Replace `QUERIES` with your real customer phrases; add assertions on tool calls and response text to turn it into a regression suite.
@@ -85,11 +86,15 @@ Quick start with a hosted model (about $5 prepaid lasts thousands of turns):
 2. Put the key in `.env`, for example `ANTHROPIC_API_KEY=...` (never commit it).
 3. Install the matching package once: `pip install langchain-anthropic` (or `langchain-openai` for groq, gemini, openrouter, mistral, cerebras, openai).
 4. Set the lane, for example `LLM_PRIMARY=anthropic:claude-haiku-5-5`. Keep `LLM_LOCAL` as the slow last resort, or set it empty.
-5. Start `python -m chat`. It prints each lane with its price and whether its key is found. Each reply shows which lane answered, the model time and the cost.
+5. Run `python -m check_lanes`. It makes one tiny call per lane and tells you in plain English what to fix (no credit, retired model name, rate limit, wrong key). Add `--models` to list the model names your key can use.
+6. Start `python -m chat`. It loads each lane first (so your first message is not slow), then prints each lane with its price and whether its key is found. Each reply shows which lane answered, the model time and the cost.
 
 Rules to know:
 - **Price.** `claude-haiku-5-5` is built in. For any other hosted model set `LLM_PRICE_PRIMARY=input,output` (USD per million tokens, `0,0` for a free tier). An unknown price is assumed to be expensive on purpose, so spend is never hidden.
 - **Budget.** At `DAILY_BUDGET_USD` paid lanes pause until tomorrow (Lagos time); the local lane still works. You get an alert once a day at `BUDGET_ALERT_PERCENT` and at the cap (console, plus `HUMAN_ESCALATION_WEBHOOK` if set).
+- **Free tiers are small.** For example Groq's free tier allowed 8,000 tokens a minute; one of our model calls is about 2,400 tokens, so only 1 or 2 customer messages a minute fit. Use a free tier to build and test, a paid or higher-limit plan for the demo.
+- **Rate limits.** If a provider asks for a short wait (6 seconds or less) the bot waits and retries once inside the same turn. A longer limit rests that lane (never more than 2 minutes) and the next lane is tried. Credit problems and bad keys pause a lane for 30 minutes.
+- **Model names change.** Providers retire models. If a lane says the model was not found, run `python -m check_lanes --models` and use a name from that list.
 - **Failures.** A slow hosted lane is retried once, then the next lane is used. A bad key or no credit pauses that lane for 30 minutes. If every lane fails, customers get `LIMITED_MODE_MESSAGE`; YES/NO answers, quotes and naming an order ID still work.
 - **Abuse.** `MODEL_TURNS_PER_HOUR` limits one phone; longer messages are cut to `MAX_MESSAGE_CHARS`. This stops one number from draining the budget. It does not stop someone with many numbers: the daily budget is the backstop.
 - **Privacy.** Hosted lanes send the chat text (no phone numbers) to the provider. Use free tiers for demos with fake data only, and read each provider's data terms before real customers.

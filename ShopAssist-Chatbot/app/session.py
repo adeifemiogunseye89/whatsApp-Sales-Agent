@@ -13,6 +13,7 @@ LIMITS (known, deliberate for now): run ONE server process. Two workers would
 each hold their own cache and overwrite each other. SWAP `_cache` + the db.*
 session functions for Redis when you scale out; the Session API stays the same.
 """
+import copy
 import json
 import time
 from dataclasses import dataclass, field
@@ -54,6 +55,8 @@ class Session:
     last_turn: dict = field(default_factory=dict, repr=False)        # diagnostics (never saved)
     model_turns: list = field(default_factory=list)                  # recent model-turn times (rate limit)
     branch_announced: bool = field(default=False, repr=False)        # branch named once per lock (never saved)
+    listed_branch_ids: list = field(default_factory=list)            # branches in the list last shown (for "2" / "the second")
+    model_turn_active: bool = field(default=False, repr=False)       # True only while the MODEL is running this turn (never saved)
     last_active: float = field(default_factory=lambda: _now())
 
     def __post_init__(self):
@@ -130,6 +133,7 @@ class Session:
         self.pending_quote = None   # a quote for the old branch is void
         self.pending_action = None
         self.branch_announced = False
+        self.listed_branch_ids = []
         self.cart.clear()          # a different branch means different prices/stock
         self.save()
 
@@ -177,6 +181,25 @@ class Session:
         (not when a branch yes/no is the open question)."""
         return bool(self.pending_quote) and not self.proposed_branch_id
 
+    def snapshot(self) -> dict:
+        """The state a model turn's TOOLS can change. Taken before the model runs."""
+        return {"proposed_branch_id": self.proposed_branch_id,
+                "pending_quote": copy.deepcopy(self.pending_quote),
+                "pending_action": copy.deepcopy(self.pending_action),
+                "branch_announced": self.branch_announced,
+                "listed_branch_ids": list(self.listed_branch_ids)}
+
+    def restore(self, snap: dict) -> None:
+        """Undo what a failed or abandoned model attempt left behind (a stray branch proposal,
+        a quote nobody saw...). Also drops any reply the attempt had prepared."""
+        self.proposed_branch_id = snap["proposed_branch_id"]
+        self.pending_quote = copy.deepcopy(snap["pending_quote"])
+        self.pending_action = copy.deepcopy(snap["pending_action"])
+        self.branch_announced = snap["branch_announced"]
+        self.listed_branch_ids = list(snap["listed_branch_ids"])
+        self.outbox = None
+        self.save()
+
     def note_model_turn(self) -> None:
         """Remember that this phone just used the model (for the per-hour limit)."""
         now = _now()
@@ -220,6 +243,7 @@ class Session:
             "pending_quote": self.pending_quote,
             "pending_action": self.pending_action,
             "model_turns": self.model_turns,
+            "listed_branch_ids": self.listed_branch_ids,
             "last_active": self.last_active,
         }, default=str)   # default=str: an odd metadata value must never crash a save
 
@@ -277,6 +301,7 @@ def _load(phone: str) -> Session:
                     pending_quote=d.get("pending_quote"),
                     pending_action=d.get("pending_action"),
                     model_turns=d.get("model_turns", []),
+                    listed_branch_ids=d.get("listed_branch_ids", []),
                     last_active=d.get("last_active", _now()),
                 )
         except Exception as e:   # corrupt row must never lock a customer out

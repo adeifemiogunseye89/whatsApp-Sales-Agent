@@ -35,7 +35,7 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "1h")       # keep the local 
 # openrouter, mistral, cerebras, ollama. Lanes are tried in this order:
 # primary -> backup -> local. Leave one empty to switch it off.
 LLM_PRIMARY = os.getenv("LLM_PRIMARY", "")                     # e.g. anthropic:claude-haiku-5-5
-LLM_BACKUP = os.getenv("LLM_BACKUP", "")                       # e.g. groq:llama-3.3-70b-versatile
+LLM_BACKUP = os.getenv("LLM_BACKUP", "")                       # e.g. groq:openai/gpt-oss-120b (model names change: run python -m check_lanes --models)
 LLM_LOCAL = os.getenv("LLM_LOCAL", f"ollama:{OLLAMA_MODEL}")   # slow last resort; "" = none
 LLM_TIMEOUT_HOSTED = int(os.getenv("LLM_TIMEOUT_HOSTED", "20"))    # seconds per hosted call
 LLM_TIMEOUT_LOCAL = int(os.getenv("LLM_TIMEOUT_LOCAL", "300"))     # seconds per local call
@@ -55,7 +55,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "shop.db")
 # Confirm the correct VAT treatment of your products with your accountant.
 TAX_RATE = float(os.getenv("TAX_RATE", "0"))
 DELIVERY_FEE_KOBO = int(os.getenv("DELIVERY_FEE_KOBO", "0"))   # pickup-only = 0
-RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "2"))   # how long we hold stock
+RESERVATION_HOURS = int(os.getenv("RESERVATION_HOURS", "5"))   # how long we hold stock
 QUOTE_TTL_MINUTES = int(os.getenv("QUOTE_TTL_MINUTES", "10"))  # how long a quote can be confirmed
 GRACE_MINUTES = int(os.getenv("GRACE_MINUTES", "30"))          # extra time to collect after the hold ends
 DAILY_RESERVATION_LIMIT = int(os.getenv("DAILY_RESERVATION_LIMIT", "3"))   # per phone, rolling 24 hours
