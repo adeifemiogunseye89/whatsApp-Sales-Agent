@@ -13,7 +13,7 @@ Anything you set in `.env` overrides the default in `app/config.py`.
 | `CURRENCY` | Symbol shown in messages. | `₦` |
 | `TAX_RATE`, `DELIVERY_FEE_KOBO` | Business rules. All money is whole KOBO (100 kobo = ₦1). | `0`, `0` |
 | `QUOTE_TTL_MINUTES` | How long a customer has to reply YES to a quote. | `10` |
-| `RESERVATION_HOURS` | How long a reservation holds stock. | `5` |
+| `RESERVATION_HOURS` | How long a reservation holds stock, in WHOLE hours (a decimal such as 1.5 stops the app from starting). The stock is actually released this long plus `GRACE_MINUTES` after the reservation. | `2` |
 | `GRACE_MINUTES` | Extra time to collect after the hold ends; stock is released when grace ends. | `30` |
 | `DAILY_RESERVATION_LIMIT` | Reservations per phone in any rolling 24 hours (cancelled and expired ones count). | `3` |
 | `SWEEP_MINUTES` | How often expired holds are released while the server runs. | `5` |

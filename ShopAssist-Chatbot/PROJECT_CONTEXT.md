@@ -1,0 +1,391 @@
+# PROJECT_CONTEXT.md: ShopAssist WhatsApp Sales/Reservation Bot
+
+> **Purpose.** This is the single hand-off file for any new chat session (or new developer).
+> Read it fully before suggesting anything. It records the product, the rules we work by, every
+> stage built, every decision (including reversals), every live-chat incident and its fix, what is
+> pending, and what is risky. If something here contradicts the code, the code wins; then fix this file.
+>
+> **Last updated:** 2026-11-21, after Stage 4.2 was delivered (patch built and verified, not yet applied by the owner).
+> **Repo:** `adeifemiogunseye89/whatsApp-Sales-Agent`, project folder `ShopAssist-Chatbot/`.
+> **Keep this file alive:** after every stage, update sections 1, 6, 8, 9, 13 and the change log (section 17).
+
+---
+
+## 0. How to start a new chat (paste this first)
+
+```
+I'm Adebanjo, continuing my WhatsApp sales/reservation bot (repo adeifemiogunseye89/whatsApp-Sales-Agent,
+folder ShopAssist-Chatbot). I'm attaching PROJECT_CONTEXT.md: read it fully and follow section 2
+(working agreement) exactly. Current state: see section 1. Today I want to: <your goal>.
+My latest `git log --oneline` and test results are below: <paste them>.
+```
+
+**First things a new session must do (do not skip):**
+1. Read sections 1, 2, 13 and 14 of this file.
+2. Ask for (or fetch) the repo's current `git log --oneline` and confirm which stages are applied. Stage 4.2 may not be applied yet.
+3. Ask for the output of all nine test suites (section 10). Trust only what was actually run.
+4. Never ask the owner to paste an API key into chat. Keys live only in his local `.env`.
+5. Do not start building until he says "go". He often wants a deliberation first (see section 2).
+
+---
+
+## 1. State of the project (TL;DR)
+
+- **What it is:** a WhatsApp bot, built as a **demo "gate pass"** to show malls and supermarkets in Nigeria a reserve-for-pickup service they could add. **No pilot shop exists yet.**
+- **What works today (all tested):** branch-aware catalogue; code-owned branch selection; code-owned quotes and reservations; hold and grace expiry with automatic release; 3 reservations per phone per rolling 24 hours; cancel and amend by YES/NO; human handoff; per-turn diagnostics; **model lanes** (hosted, backup, local), spend budget, abuse limits, limited mode; lane health check tool.
+- **Stages complete:** 1, 2, 2.5, 2.5.1, 3, 3.1, 4, 4.1 (pushed to GitHub). **Stage 4.2 is built and verified; the owner still has to apply it** (`stage4_2.patch`) and make the separate repo-hygiene commit.
+- **Tests:** 9 suites, **206 tests**, all passing on a fresh clone of the pushed repo with the 4.2 patch applied. 31 deliberate code breaks were each caught by the 4.2 tests (and earlier stages had their own mutation checks).
+- **Brain status:** the local model (qwen2.5:14b) takes **5 to 8 minutes per model turn** on the owner's CPU-only PC (2 GB GPU), so it is development-only. Hosted lanes answer in **0.8 to 2.8 seconds**. Live-tested on Groq's free tier with `openai/gpt-oss-120b`: worked well, but the free tier allows only about 1 to 2 customer messages a minute. His free Anthropic key has **no API credit**. A paid or higher-limit lane is needed for the demo.
+- **Next steps (owner decides):** apply hygiene commit and Stage 4.2; run the live chat script (section 14); then either **Stage 5** (CSV catalogue importer, per-shop settings, reserve alerts, preview mode) or a short **model comparison**. See section 13.
+
+---
+
+## 2. The owner and the working agreement (non-negotiable)
+
+**Who:** Adebanjo N. Ogunseye, solo founder and entry-level developer in Nigeria (Lagos, focus on Ibeju-Lekki). Background: sales management, market analysis, strategic planning. JavaScript beginner; Python and PowerShell tasks need exact commands. Windows + PowerShell + Ollama.
+
+**How he wants us to work:**
+1. **Brutal candor, no sycophancy, no hallucination.** Say what is weak, what you did not test, and what you are unsure of. Never claim a test, search or run that did not happen.
+2. **Situational context first.** Establish the real situation before judging any idea. Give directional expert views with context **before** a decision is taken.
+3. **Council of opposing views and loophole-finding.** For each decision present competing approaches, the strongest objections, and how the idea could be abused or fail. He also wants global alternative opinions.
+4. **Deliberate before building.** When he says "let's deliberate, do not build, let's see what it will be", give the design, options, risks and decisions needed, then **wait for "go"**.
+5. **Stage-by-stage development** with line-by-line explanation, exact placement in the codebase, and verification against each stage's stated needs before moving on.
+6. **A recommended GitHub commit message for every stage** (subject of 72 characters or fewer; then why, what, verified, known issues). Past messages are in `outputs/commits/`.
+7. **Code references for every function block:** file and line, what calls it, what it leads to.
+8. **Deliver whole files or whole functions plus a `.patch`.** Never ask him to edit single lines or use line numbers: pasted indentation and line-number edits have repeatedly failed him.
+9. **Show him what to run and what to send back** (exact PowerShell commands, expected output).
+10. **He pastes live-chat transcripts for review.** Respond with observations, pushback, root causes, and a fix proposal; do not just praise.
+11. **Spend discipline:** hosted model spend must be the barest minimum (he can pay in dollars, roughly $5 prepaid at a time).
+12. **Verify before delivery:** run the full suite on a **fresh clone of his pushed repo with the patch applied**; mutation-test every new guard; say plainly what could not be tested (for example real provider calls without a key).
+
+---
+
+## 3. Product vision, scope and decisions
+
+### 3.1 What the bot does
+- Customers chat on WhatsApp in plain language (typos, Pidgin-friendly). The bot finds the nearest **branch**, shows branch-specific prices and stock, builds a **quote**, and on the customer's **YES** creates a **reservation** (stock held; pay at the counter at pickup with a pickup code).
+- Customers can ask for order status, **amend** quantities, or **cancel** (each needs a YES).
+- Anything outside its remit (refunds, complaints) goes to a human via `escalate_to_human`.
+
+### 3.2 Demo-first strategy
+- The demo is a **gate pass** to shop owners; there is no pilot shop yet. The pilot would use a **dedicated WhatsApp number** (API-only).
+- Shops' own till/stock files are the source of prices and stock (hence the Stage 5 CSV importer).
+- "POS" here means **card terminals used for payment only**; in the reserve path the bot **never takes money**.
+
+### 3.3 Reserve alerts to shops (decided, not yet built)
+- A plain notification to a **shared customer-care phone per branch** (reps may call customers). One shared number per branch; **no pickup code in the alert**; the alert includes the customer's full number; customer sees: "The shop may call or message you about this reservation."
+- Alerts to staff outside the 24-hour WhatsApp window need **approved message templates**.
+- No staff-side cancel yet. **Nothing marks orders `COLLECTED` yet**, so reports can show reserved, cancelled and expired but not collected. (The `READY` and `COLLECTED` statuses exist in the schema but no code sets them.)
+- Parking reservations: only if customers ask.
+
+### 3.4 Pay-now design (agreed on paper; design doc: https://claude.ai/artifact/1A19VMPe4zsuBXgbYXEkfU)
+- Customer chooses **Pay now** or **Reserve**. Pay now uses a **one-time account number per order**, confirmed automatically by a gateway (Paystack, Flutterwave or Monnify, the shop's own account). Fees reported between roughly 0.1% and 1.5% with caps; **sources disagree**.
+- Staff manual confirmation only as a fallback, using the provider's real reference, **never a screenshot**.
+- Customer bears the transfer fee, shown in the quote with consent saved.
+- **No pay now for fresh or weighed items** (catalogue flag `pay_now_eligible`).
+- Refunds: customer cancel = minus actual fees; shop-caused failure = full refund; late payment or uncollected after 3 days = minus fees. Prepaid orders cannot be amended.
+- Handover verified at the desk (pickup code plus last 4 digits of the phone).
+- Pack alert on shared branch phones with quick-reply buttons [Pack now] [Pack in 1 hour] [Can't pack]; backup phones and re-alert after 5 minutes.
+- Proposed numbers: **10 pay-now orders per 24 h, at most 2 awaiting payment, about 20-minute unpaid window, 5-minute re-alert, 3-day uncollected refund.** (He confirmed the open design points; confirm these numbers again at Stage 5 start.)
+- In the demo, pay now shows in **Preview mode only** (per-shop switch Off / Preview / Sandbox).
+- **Needs before real money:** legal review of refund wording; verification of Meta template button limits.
+
+### 3.5 WhatsApp costs (researched; treat as estimates)
+- Since 1 October 2026 service replies and in-window utility templates are chargeable after **1,000 free per number per month**; estimates for Nigeria about **₦9 to ₦14 per chargeable message** (sources disagree; billed in USD). Verify before relying on it.
+- WhatsApp "coexistence" (using the shop's existing number plus the API) had conflicting vendor claims for Nigeria, so **it is not promised**; plan on a new dedicated number.
+
+---
+
+## 4. Architecture and principles
+
+### 4.1 Shape
+```
+WhatsApp user -> Meta Cloud API -> FastAPI /webhook (app/main.py)
+   -> run_agent(phone, text) (app/agent.py)
+        1. CODE PATHS FIRST (no model, instant): YES/NO to a branch, to a cancel/amend, or to a quote
+        2. per-phone limit check (30 model turns per hour)
+        3. MODEL PATH: LaneRouter -> primary -> backup -> local (app/llm.py), tools in app/tools.py
+        4. GUARDS check the model's wording; code-written text (the "outbox") replaces model text
+        5. state saved (SQLite), diagnostics line written (metadata only)
+   -> app/whatsapp.py sends the reply (prints to console when no token is set)
+```
+
+### 4.2 Principle: **code owns high-stakes steps; the model only chooses tools and phrases answers**
+High-stakes = which branch, quotes, creating/cancelling/amending orders, money, expiry, limits. The model can propose; code decides and writes the text the customer sees.
+
+### 4.3 Rules we learned the hard way (apply to all future work)
+1. **Never trust model claims** ("branch set", "order created"). Check against state; a reply that fails a guard is rejected and never saved to history.
+2. **No examples in prompts or tool descriptions.** Models copy them (the 14B copied "(price) (6 in stock)"; gpt-oss passed "city or area" and "Lekki" as arguments).
+3. **Validate model tool arguments against what the customer actually said** (grounding).
+4. **Undo side effects when a turn fails** (snapshot/restore). A half-failed turn must not leave a proposal, quote or reply behind.
+5. **Classify provider errors carefully.** Rate limit is not billing, even if the message contains the word "billing".
+6. **Money is integer kobo** (₦14,500 = 1450000). Spend is integer micro-dollars.
+7. **Diagnostics never contain customer text or raw phone numbers.**
+8. **Spend and abuse are capped by code**, with an operator alert once a day, not just by a provider setting.
+9. **Name the branch once** after it is locked; quotes, receipts and alerts always name it. WhatsApp has no superscript; bold is single-asterisk `*text*`.
+10. **Everything stateful is persisted** (sessions in SQLite, idle TTL), so restarts do not lose branch locks or pending confirmations.
+
+---
+
+## 5. Codebase map
+
+### 5.1 Files (`ShopAssist-Chatbot/`)
+| File | Role |
+|---|---|
+| `app/main.py` | FastAPI: webhook verify and receive; startup lists lanes, loads them, starts the hold-release sweeper (every `SWEEP_MINUTES`) |
+| `app/agent.py` | System prompt, `run_agent` / `_run_agent` pipeline, guards wiring, limited mode, diagnostics capture |
+| `app/llm.py` | **Model lanes**: lane parsing, provider objects, classify and retry, circuit breaker, state-note folding, `prepare()`, `warm_up()` |
+| `app/budget.py` | Spend counting (micro-dollars), daily cap, operator alerts once a day, Lagos-day logic |
+| `app/tools.py` | LLM-callable tools (below), grounding of `set_pickup_location` |
+| `app/orders.py` | Code-owned ordering: quote building and texts, YES/NO parsing, confirm, cancel, amend, receipts |
+| `app/branches.py` | Code-owned branch step: ask, list, propose, confirm, reject texts |
+| `app/guards.py` | Reality checks on the model's wording about branches |
+| `app/session.py` | Per-phone state persisted in SQLite: branch lock, proposals, pending quote/action, history, outbox, handoff, snapshot/restore |
+| `app/db.py` | Schema, seed data, branch-aware queries, safe order writes, release logic, usage and alert tables |
+| `app/diagnostics.py` | Per-turn record to `logs/turns.jsonl` |
+| `app/textfmt.py` | Shared helpers (kobo to naira text, WhatsApp bold, `WAT` timezone) |
+| `app/whatsapp.py` | Meta send client with message chunking |
+| `app/config.py` | Env-driven settings; reads `.env` itself (no export needed) |
+| `chat.py` | Dev terminal chat (`python -m chat`, `--quiet` hides developer lines) |
+| `check_lanes.py` | Lane health check (`python -m check_lanes [--models]`) |
+| `eval/test_queries.py` | **Legacy** canned-queries harness; needs a running model; not part of the suites |
+| `tests/test_stage*.py` | Nine suites (section 10) |
+| `.env.example` / `.env` | Template (committed) vs your real private settings (never committed) |
+| `README.md`, `CUSTOMIZE.md`, `PROJECT_CONTEXT.md` | Overview, settings guide, this file |
+
+### 5.2 Tools the model may call
+`set_pickup_location` (grounded; the system, not the model, shows the result), `search_products`, `get_product_details`, `check_inventory`, `get_price_quote` (prepares a quote; code shows it), `amend_order` and `cancel_order` (prepare an action; the customer must reply YES), `track_order`, `escalate_to_human`. There is **no** `create_order` tool and **no** `confirm_pickup_branch` tool: they were removed on purpose (Stages 3 and 3.1).
+
+### 5.3 Database (SQLite `shop.db`)
+`branches` (branch_id, name, city, address, active), `products` (product_id, name, description, category), `branch_inventory` (branch_id, product_id, price_kobo, stock_qty), `orders` (order_id, idempotency_key, branch_id, customer_phone, items_json, subtotal/tax/delivery/total kobo, pickup_code, status, created_at, expires_at, release_at, closed_at), `sessions` (phone, state_json, updated_at), `llm_usage` (day, lane, calls, tokens, cost_micro_usd), `llm_alerts` (day, kind).
+Order statuses: `RESERVED`, `READY`, `COLLECTED`, `CANCELLED`, `EXPIRED` (the last two plus `RESERVED` are the only ones code sets today).
+Seed data in `db.py`: 3 branches (Lekki, Ikeja, both Lagos; Wuse, Abuja), 6 products, 15 inventory rows. In-place migration keeps older databases working.
+
+### 5.4 Settings (all in `.env`; defaults in `app/config.py`; documented in `.env.example` and `CUSTOMIZE.md`)
+- **Business:** `DATABASE_PATH`, `CURRENCY`, `TAX_RATE=0`, `DELIVERY_FEE_KOBO=0`, `RESERVATION_HOURS=2` (owner changed it from 5 on 2026-11-21; whole hours only), `QUOTE_TTL_MINUTES=10`, `GRACE_MINUTES=30`, `DAILY_RESERVATION_LIMIT=3`, `SWEEP_MINUTES=5`, `LOG_DIR=logs`, `SESSION_TTL_HOURS=24`, `HANDOFF_HOURS=4`, `HISTORY_CAP=20`, `HUMAN_ESCALATION_WEBHOOK`.
+- **WhatsApp:** `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `META_API_VERSION`.
+- **Local model:** `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default `llama3.1:8b`), `OLLAMA_NUM_CTX=6144`, `OLLAMA_KEEP_ALIVE=1h`, `LLM_WARM_UP` (off).
+- **Brain lanes:** `LLM_PRIMARY`, `LLM_BACKUP`, `LLM_LOCAL` (default `ollama:<OLLAMA_MODEL>`; empty switches the local lane off), keys `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `CEREBRAS_API_KEY`, optional `LLM_PRICE_<SLOT>=input,output` (USD per million tokens).
+- **Guards:** `DAILY_BUDGET_USD=0.50` (0 = no cap), `BUDGET_ALERT_PERCENT=80`, `MODEL_TURNS_PER_HOUR=30`, `MAX_MESSAGE_CHARS=600`, `LLM_TIMEOUT_HOSTED=20`, `LLM_TIMEOUT_LOCAL=300`, `LLM_MAX_OUTPUT_TOKENS=300`, `LIMITED_MODE_MESSAGE`.
+
+---
+
+## 6. Stage history
+
+| Stage | Commit (date) | What it added and why |
+|---|---|---|
+| 0 | `5654512` to `107b766` (Oct 10 to 23) | Original skeleton, first branch recognition, order tracking and pickup codes |
+| 1 | `7a2776d` (Oct 24) | Branch-aware data model (branches, per-branch inventory, kobo money, order with pickup code); `set_pickup_location`; branch lock in session. 15 tests |
+| 2 | `ad6b324` (Oct 25) | Sessions persisted in SQLite; safe history trimming; real human handoff (`escalate_to_human`, webhook, `HANDOFF_HOURS`); idle TTL. 17 tests |
+| 2.5 | `3d0ddb1` (Oct 25) | System-state note shown to the model every turn (branch, proposals, quote). 8 tests |
+| 2.5.1 | `05139d3` (Oct 25) | A "proposed" branch equal to the confirmed one is never asked about again. 5 tests |
+| 3 | `0ae90d3` (Oct 25) | **Orders created by code** from a customer-confirmed quote; outbox mechanism (code-written text overrides model text); YES/NO parsed by code; `create_order` tool removed; re-order allowed; WhatsApp bold conversion; `QUOTE_TTL_MINUTES=10`. 22 tests |
+| 3.1 | `8fb5c15` (Oct 28) | **Branch step code-owned** (`branches.py`); `confirm_pickup_branch` tool removed; `guards.py` rejects invented branches or false "branch set" claims; rejected replies never saved; prompt example conversation removed; `RESERVATION_HOURS` default 5. 19 tests |
+| 4 | `7959fce` (Oct 31) | Hold (5 h by default then; **2 h since 2026-11-21**) plus 30 min grace, then release (`release_at`, background sweeper); **3 reservations per phone per rolling 24 h** (cancelled and expired ones still count; the slot is never returned); `cancel_order` and `amend_order` (code-confirmed YES; amend edits in place keeping id, code and hold clock, and uses no extra slot); open reservations in the state note; per-turn diagnostics; in-place DB migration. 35 tests, 17 mutation breaks caught |
+| docs | `18f59fc` (Nov 3) | CUSTOMIZE.md matched to Stage 4 |
+| 4.1 | `fac8b4c` (Nov 14) | **Model lanes** (primary, backup, local), timeouts, retry, circuit breaker, spend budget in micro-dollars, operator alerts once a day, per-phone turn limit, message length cap, **limited mode**, branch named once, local-lane tuning (context, keep-alive), `chat --quiet`. 43 tests, 24 breaks caught |
+| 4.2 | **delivered 2026-11-21, owner to apply** | Rate limits never mistaken for billing, provider wait honoured, snapshot/restore of failed turns, **grounded `set_pickup_location`**, lane list pick by "2", `check_lanes` tool, lanes loaded at start, failed attempts timed, docs fixed. 42 tests, 31 breaks caught. Patch also fixes a stray `cl` on line 1 of `tests/test_stage3_1.py` |
+
+Commit messages for every stage are in `outputs/commits/` (`0_combined...` through `11_stage4_2_commit.txt`).
+
+---
+
+## 7. The brain: lanes, budget, limits (read before touching `llm.py` or `agent.py`)
+
+### 7.1 Why lanes exist
+The owner's PC is CPU-only (2 GB GPU). Measured: qwen2.5:14b about 1.3 tokens/s reading prompts and 0.9 writing; **5 to 8 minutes per model turn**. llama3.1:8b about 2 to 4 minutes; qwen2.5:3b about 1 to 1.5 minutes. None is usable for customers; code-answered turns take milliseconds on any model. A hosted small model answers in seconds.
+
+### 7.2 How lanes work (`app/llm.py`)
+- Up to three lanes, each `provider:model`, tried in order **primary, backup, local**. Providers: anthropic, openai, groq, gemini, openrouter, mistral, cerebras, ollama. Model names containing `:` are fine (the split is on the first colon).
+- Hosted lanes: short timeout, **one retry**, then the next lane. Errors are classified: `auth`, `billing`, `rate_limit`, `transient`, `other`.
+  - `billing` only from HTTP 402 or specific phrases (such as "credit balance is too low" or "insufficient_quota"); **never** from the word "billing" alone.
+  - `rate_limit`: if the provider asks for 6 seconds or less, wait and retry once in the same turn; a longer wait rests the lane for that time (never over 2 minutes; 60 s if none given).
+  - `auth` and `billing` pause a lane 30 minutes and alert the operator once a day. Three transient failures in a row pause it 60 s.
+- The per-turn state note is **folded into the customer's message** for hosted lanes (some providers reject a mid-conversation system message).
+- `prepare()` loads every available lane at start (printed by `chat` and server startup). Warm-up of a local model is opt-in (`LLM_WARM_UP=1`) because it can take minutes and must not hang tests.
+- `before_retry` hook: `agent.py` passes an undo function so tools' side effects from a failed attempt are reverted before the next attempt or lane.
+- If every lane fails or the paid budget is used up: **limited mode** shows `LIMITED_MODE_MESSAGE` ("We're a bit busy; the team will reply shortly."). Code still answers YES/NO, quotes in progress, and naming an order ID. The failed turn's side effects are restored, and the unanswered message is dropped from history.
+
+### 7.3 Spend and abuse (`app/budget.py`, `agent.py`)
+- Every call is counted in integer micro-dollars (price per million tokens x tokens) per Lagos day and lane. **Claude Haiku 5.5 is built in at $0.10 in / $0.50 out per million tokens.** An unknown hosted price is assumed pessimistically ($1 / $3) until `LLM_PRICE_<SLOT>` is set (`0,0` for a free tier).
+- At `DAILY_BUDGET_USD` (default $0.50) paid lanes pause until tomorrow; the local lane still works. Alerts at `BUDGET_ALERT_PERCENT` and at the cap go to the console and to `HUMAN_ESCALATION_WEBHOOK`.
+- Per phone: `MODEL_TURNS_PER_HOUR` (30) and `MAX_MESSAGE_CHARS` (600). Code paths (YES/NO) are never rate limited. This does not stop an attacker with many numbers; the daily budget is the backstop.
+- Cost math (assumption: about 3,000 tokens in and 100 out per model call): about $0.00035 per turn, roughly ₦0.47 at ₦1,340 per dollar; **$5 buys about 14,000 turns**. WhatsApp fees (section 3.5) dwarf this.
+
+### 7.4 Provider facts learned (as of Nov 2026)
+- **Anthropic API credit is separate from a Claude chat plan.** His "free" key returned HTTP 400 "credit balance is too low": it needs credit bought in the Console (Plans & Billing).
+- **Groq retired `llama-3.3-70b-versatile` on 16 Aug 2026.** His key sees: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `openai/gpt-oss-safeguard-20b`, `qwen/qwen3.8-27b`, `allam-2-7b`, plus speech and guard models. Use `python -m check_lanes --models` instead of guessing names.
+- **Groq free tier:** 8,000 tokens per minute for `gpt-oss-120b`; one of our model calls is about 2,400 tokens (a tool-using turn makes two calls), so about **1 to 2 customer messages a minute in total**. Free tiers are for building and testing only.
+- Free tiers can use data for training and change limits without notice. Use fake data on them. Hosted lanes send chat text (no phone numbers) to the provider.
+- OpenAI-compatible base URLs in `llm.py` were written from memory; verify against each provider's docs.
+
+### 7.5 What a good live run looks like
+On Groq `gpt-oss-120b`: model times 0.8 to 2.8 s (first call after restart 9 s before Stage 4.2 loaded lanes at start), zero retries, zero guard rejections, correct tool choice, exact prices and stock copied from tool output.
+
+---
+
+## 8. Live-chat findings log (the turns and curves)
+
+| # | What happened | Root cause | Fix / status |
+|---|---|---|---|
+| 1 | Model invented a "Victoria Island Branch" and three addresses; said "we've set Victoria Island Branch" with no branch set; looped on invented text | 14B model plus a prompt that let it confirm branches | Stage 3.1: branch step in code, branch guard, invented replies never saved |
+| 2 | Model echoed prompt examples ("(price)", "(6 in stock)", "Assistant: (call ...)") | Example conversation in the prompt | Example removed (Stage 3.1); rule 4.3.2 |
+| 3 | Reservations never expired (stock showed 1 instead of 12) | No hold expiry | Stage 4: hold, grace, release sweeper, in-place migration |
+| 4 | Duplicate confirmation sentence after branch YES | Code text plus model text | Open (cosmetic); watch in transcripts |
+| 5 | First chat turn 155,920 ms; later 5 to 8 minutes per model turn | CPU-only PC, 12 GB model footprint, 16,384 context, paging | Stage 4.1 lanes; hosted brain recommended |
+| 6 | `test_stage3_1` "silent" run | Typing `test_stage3_1.py` alone launches it via file association; PowerShell needs `python tests\test_stage3_1.py` | Documented (section 11) |
+| 7 | Anthropic lane: "credit balance is too low" | Key has no API credit | Needs credit; limited mode and alert verified live |
+| 8 | Groq lane: 404 model not found | Model retired Aug 2026 | Names updated; `check_lanes --models` |
+| 9 | gpt-oss run: customer saw "I couldn't find a branch for 'city or area'" | Model passed words from the prompt as the place | 4.2: grounded branch tool |
+| 10 | After the customer confirmed Ikeja, the model proposed Lekki | Example place names in the tool description; model called the tool again | 4.2: examples removed, tool refused right after a code-confirmed branch |
+| 11 | Groq 429 "try again in 2.5s" labelled billing; lane locked 30 min | Classifier matched the word "billing" in the upgrade link | 4.2: classification order fixed; short waits served in-turn |
+| 12 | A failed turn left `proposed=BR-LKI` nobody saw | Tools had already run before the model call failed | 4.2: snapshot/restore |
+| 13 | 9 s first message; 19 to 60 s on failed first turns | Provider packages and graph built on the customer's time | 4.2: `prepare()` at start |
+| 14 | Pushed repo contained `shop.db-shm` / `shop.db-wal`, a `requirements` file without `.txt`, and a stray `cl` on line 1 of `tests/test_stage3_1.py` | `git add -A` swept up working files and an accidental keystroke | Hygiene commit and 4.2 patch (owner to apply). No secrets found in any commit |
+| 15 | Amend and cancel after a reservation exists never seen on a live hosted model | Not yet run | Pending (section 14) |
+
+Earlier model comparisons: qwen2.5:14b (original dev model, picked tools reasonably but too slow), llama3.1:8b, qwen3:14b and gpt-oss:20b exist locally but are too heavy for the CPU-only machine.
+
+---
+
+## 9. Decision log (including reversals)
+
+| Decision | Why | Alternatives rejected |
+|---|---|---|
+| Code owns branch, quote, orders, expiry, limits | Small models lie and drift | Letting the model confirm or create orders (Stages 1 to 2 era) |
+| Customer YES/NO is parsed by code | Reliable, testable | Asking the model to interpret confirmations |
+| Reservations: hold + 30 min grace; 3 per rolling 24 h; cancelled and expired still count | Prevents hoarding stock | Returning the slot on cancel |
+| **Hold shortened from 5 h to 2 h** (owner, 2026-11-21; stock is really locked 2.5 h with the grace) | Cut the window a competitor could use to lock stock by about 55% per reservation (5.5 h to 2.5 h), and return unsold stock faster | Keeping 5 h. Concerns raised: Lagos traffic and after-work collection; expired reservations still burn one of the 3 daily slots; no cap on quantity per reservation (one reservation can lock all of an item: 12 of 12 was reserved in a live chat) |
+| Amend edits the order in place (same id, code, hold clock, no extra slot) | Customer-friendly and abuse-safe | Cancel and re-reserve |
+| Money in integer kobo; spend in integer micro-dollars | No float errors | Floats |
+| Sessions in SQLite JSON with idle TTL (Redis later) | Survive restarts without new infrastructure | In-memory dict |
+| Diagnostics log metadata only | Privacy | Logging chats |
+| Hosted brain for demo, local only for development | Measured 5 to 8 min local turns | Buying a GPU now; waiting on local |
+| Provider-agnostic lanes | Models are retired and prices change (it already happened) | Hard-wiring one vendor |
+| **Plan changed:** prompt/tool-description diet **dropped** from 4.1 | Saves a fraction of a naira per turn on paid lanes and could change behaviour; revisit after the comparison | Doing it anyway |
+| Local warm-up opt-in | It can take minutes and hung-test risk | On by default |
+| For demo and pilot keep `LLM_LOCAL=` empty | "We're a bit busy" beats a 5-minute wait | Slow local fallback for customers |
+| Free tiers: build and test only | 1 to 2 messages a minute; data-use terms; churn | Using them for the demo |
+| One API key per provider | Simplicity | Key pools |
+| Pay-now: gateway auto-confirm, customer bears transfer fee, no screenshots, Preview mode in demo | Fraud and support cost | Manual screenshot approval |
+| Reserve alerts: one shared phone per branch, no pickup code in alert | Privacy and simplicity | Per-staff alerts |
+| New dedicated WhatsApp number for the pilot | Coexistence claims conflict | Reusing a shop's number |
+
+---
+
+## 10. Testing and verification method
+
+**Suites (run from `ShopAssist-Chatbot/`; PowerShell needs the `python` prefix and backslash):**
+```powershell
+python tests\test_stage1.py     # 15
+python tests\test_stage2.py     # 17
+python tests\test_stage2_5.py   # 8
+python tests\test_stage2_5_1.py # 5
+python tests\test_stage3.py     # 22
+python tests\test_stage3_1.py   # 19
+python tests\test_stage4.py     # 35
+python tests\test_stage4_1.py   # 43
+python tests\test_stage4_2.py   # 42   -> total 206
+```
+- No Ollama, no network, no keys needed: models are faked (`FakeAgent` / fake graphs). Each suite prints `N/N passed` on its last line.
+- Tests are organised as **NEEDS** (what the stage must achieve) with named tests per need; a docstring at the top of each suite lists them.
+- **Mutation testing:** after writing tests, break the code on purpose (one change at a time on a copy) and confirm a test fails. Weak tests found this way are fixed. Stage 4.2: 31 of 31 caught.
+- **Delivery check:** clone the owner's pushed repo fresh, apply the patch, run all nine suites. Build patches with `git add -A` then `git diff --cached --binary` (plain `git diff` silently omits new files; this once dropped two files).
+- Real providers are never called by tests. `python -m check_lanes` is the manual real-call check. It was run once against Anthropic's real server with a fake key and correctly reported an auth failure.
+- `tools/verify_project.py` (in outputs, not the repo) compared his files to the **Stage 4** reference; it is stale for later stages.
+
+---
+
+## 11. Environment, gotchas and repo hygiene
+
+- **Windows + PowerShell.** Prompts starting `PS C:\...>` are PowerShell; `C:\Users\...>` is the old Command Prompt (PowerShell commands fail there with "was unexpected at this time").
+- Run tests as `python tests\test_stageX.py`. Typing the file name alone launches it through file association and shows nothing.
+- **`.env` vs `.env.example`:** `.env.example` is the committed template (patches update it); `.env` is his private file (patches never touch it). Settings not in `.env` use defaults from `config.py`. In `.env`, active lines must **not** start with `#`; no quotes; spaces around `=` are tolerated; the file must be named `.env` (not `.env.txt`) and sit in `ShopAssist-Chatbot/`.
+- **Never put a real key in `.env.example`** (it is committed). If a key was ever shared, rotate it.
+- **Packages:** `pip install -r requirements.txt` (the file must be named `requirements.txt`); hosted lanes also need `pip install langchain-anthropic` and/or `pip install langchain-openai` (Groq, Gemini and other OpenAI-compatible providers use the latter).
+- **Git hygiene (pending fix):** do not commit `shop.db*`, `logs/`, `.env`. Add `*.db-shm`, `*.db-wal`, `*.db-journal` to `.gitignore`; remove tracked ones with `git rm --cached`. Older commits hold test data from his own chats (no real customers); consider making the repo private rather than rewriting history. Use `git status` before `git add -A`.
+- Keystroke accidents have happened (a stray `cl` at the top of a test file). After pasting files, run the suites.
+
+---
+
+## 12. Assets and documents
+
+- **Demo catalogues** (`outputs/demo_catalogue/`): `demo_catalogue_lekki.csv` (150 products), `demo_catalogue_ikeja.csv` (144), `demo_catalogue_wuse.csv` (140). Columns: `sku, name, category, price` (whole naira), `stock, active, pay_now_eligible` ("no" for 15 / 13 / 11 fresh or weighed items). Staples anchored to NBS price figures; branded prices are estimates. `price_calibration_sheet.csv` (15 items) was offered for real shelf prices; **not returned yet**. **Not yet loadable:** do not paste products into `db.py`; the Stage 5 importer will load them.
+- **Design doc, pay-now:** https://claude.ai/artifact/1A19VMPe4zsuBXgbYXEkfU
+- **Latency and branch-display analysis:** https://claude.ai/artifact/LKGraFqBww5KgMrZFbzJ23
+- **Patches and files per stage:** `outputs/stage1` through `outputs/stage4_2`; commit messages in `outputs/commits/`.
+- **Full earlier transcript** (Stages 1 to 4, may not be available in a new session): `/mnt/transcripts/2026-11-20-11-49-43-whatsapp-sales-bot-stages-1-to-4.txt`.
+
+---
+
+## 13. Roadmap and open decisions
+
+**Owner actions pending (do these before new feature work):**
+1. Hygiene commit (untrack `shop.db-shm`/`shop.db-wal`, rename `requirements` to `requirements.txt`, update `.gitignore`).
+2. Apply `stage4_2.patch`, run all suites (expect 206), commit with `11_stage4_2_commit.txt`.
+3. Replace `README.md` and add `PROJECT_CONTEXT.md` (this documentation update).
+4. Run the live chat script (section 14) on the hosted lane; send the transcript and 3 lines of `logs\turns.jsonl`.
+5. Choose the demo lane: buy small Anthropic credit (or another paid tier). Free Groq is dev-only.
+
+**Proposed order after that (he decides):**
+- **Stage 5:** CSV catalogue importer (dry-run, all-or-nothing, row-level errors, Excel quirks, respects open holds, includes `pay_now_eligible`; later URL or Google-Sheet source, then a per-shop adapter); **per-shop settings** (pay-now mode Off/Preview/Sandbox, ordered alert phone list, timers); **reserve alert** to the branch's primary phone via template; customer notice line.
+- **Stage 5b:** Preview choice screen (Pay now / Reserve).
+- **Stage 6:** webhook hardening (Meta signature check, duplicate message handling, voice notes and media), **numbers guard** (every ₦ and stock figure in a reply must appear in a tool result), concurrency (the server currently blocks the event loop during a model call).
+- **A short model comparison** (same 30 scripted chats on the local 8B, a hosted small model, a second vendor; score first-try tool accuracy, rejections, speed, cost per order).
+- **Later:** sandbox pay now, pack-alert buttons, refunds, terms, staff-side actions (mark READY/COLLECTED, cancel), code fast paths for greetings/thanks, prompt diet if needed, Redis/Postgres swap.
+- **Four pay-now numbers to re-confirm at Stage 5 start:** 10 per 24 h, 20-minute unpaid window, 5-minute re-alert, 3-day uncollected refund.
+
+---
+
+## 14. Live test script (hosted lane)
+
+```powershell
+python tests\test_stage4_2.py        # expect 42/42
+python -m check_lanes --models       # plain-English health check; lists model names
+python -m chat
+```
+In the chat:
+1. `reset`, then "do u have basmati rice" -> expect the **standard city question** (no "city or area" leak).
+2. "lagos" -> branch list; "2" -> **Lekki proposal**; "yes" -> branch confirmed **plus** the rice answer (no second proposal).
+3. "7 units of basmati" -> quote; "make it 4 instead" -> new quote; "yes" -> receipt.
+4. **Amend:** "make it 2 instead" -> "Change reservation ORD-...?"; "yes" -> updated, same code.
+5. **Cancel:** "cancel my order"; "yes".
+6. Reserve until the **3-per-24h limit** message appears; then "where is my order".
+7. Send several quick messages to trigger a rate limit: the `[llm]` line must say `rate_limit` (not `billing`) and the bot should recover after a short wait.
+Send back: the transcript with the `[turn: ...]` lines and 3 lines of `logs\turns.jsonl` (`in_tokens`, `out_tokens`, `cost_micro_usd`).
+
+---
+
+## 15. Known issues and risk register
+
+| Risk | Severity | Notes |
+|---|---|---|
+| Prices and stock figures are written by the model | Medium | Copied correctly in live chats, but unverified. Numbers guard planned (Stage 6) |
+| Free-tier rate ceiling | High for the demo | Need a paid or higher-limit lane |
+| Guards might over-reject generic wording ("pickup code", "was updated") | Low to medium | Diagnostics (`rejected=`) will show it |
+| Branch grounding looks only at the last 4 customer messages | Low | Worst case: one extra "which city?" question |
+| Server blocks during a model call | Medium for scale | Fine for a demo; fix in Stage 6 |
+| Webhook has no signature check, duplicate handling or media handling | High before real traffic | Stage 6 |
+| Nothing marks orders READY/COLLECTED; no staff-side cancel | Medium | Reports cannot show "collected" |
+| Duplicate confirmation sentence after branch YES | Low (cosmetic) | Watch |
+| Model sometimes repeats the branch name despite the prompt | Low | Cosmetic |
+| Hosted lanes send chat text to a third party | Medium | Add a consent line; read provider data terms before real customers |
+| Hold of 2 h may be too short for genuine customers (traffic, after-work pickup); late ones burn a daily slot | Medium | Watch expiry counts once real use starts; options: extend-once, per-shop hold, longer hold for low-value staples |
+| No cap on quantity or value per reservation; the 3-per-24h limit is per phone, so many numbers can still hoard | Medium to high with competitors | Candidate safeguards: max share of a branch's stock per reservation, max value per reservation and per phone, alert the shop on large reservations, no-show tracking once COLLECTED is recorded |
+| `RESERVATION_HOURS` accepts whole numbers only (1.5 crashes start-up with a ValueError); the quote text says "1 hours" if set to 1 | Low | Small fix pending |
+| Legal wording for refunds; Meta template button limits; fee estimates; WhatsApp coexistence | Medium | Verify before real money |
+| `eval/test_queries.py` and `tools/verify_project.py` are stale | Low | Not part of the suites |
+| Past commits hold his own test chats (WAL files) | Low | No real customers; consider a private repo |
+| No successful hosted call has been exercised by automated tests | Medium | Providers are faked; live chats are the proof |
+
+---
+
+## 16. Glossary
+
+**Branch:** one shop location with its own stock and prices. **Lock:** the confirmed branch for a chat. **Proposal:** a branch suggested but not yet confirmed by YES. **Quote:** priced basket waiting for YES (valid `QUOTE_TTL_MINUTES`). **Hold:** the reservation period (`RESERVATION_HOURS`); **grace:** extra minutes to collect (`GRACE_MINUTES`); **release:** stock returned to inventory. **Outbox:** code-written text that overrides the model's reply. **Lead:** the code-confirmed branch line shown before the model resumes the customer's earlier question. **Lane:** one provider and model the router can use. **Limited mode:** the busy message when no lane can answer. **Kobo:** 1/100 naira. **Micro-dollar:** 1/1,000,000 dollar. **Grounding:** checking a model's tool argument against what the customer actually typed. **Snapshot/restore:** saving and reverting the state a model turn's tools may change.
+
+---
+
+## 17. Change log of this file
+- 2026-11-21: first full version, written after Stage 4.2 delivery (covers Stages 1 to 4.2, brain lanes, live-chat findings, decisions, roadmap, risks).
+- 2026-11-21: reservation hold changed from 5 h to 2 h by the owner (config.py and .env); decision, risks and settings entry updated.
