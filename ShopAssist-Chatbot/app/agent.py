@@ -22,7 +22,7 @@ from app import branches, budget, diagnostics, guards, llm, orders
 from app import tools as _tools
 from app.config import LIMITED_MODE_MESSAGE, MAX_MESSAGE_CHARS, MODEL_TURNS_PER_HOUR
 from app.session import append_message, get_session
-from app.textfmt import to_whatsapp
+from app.textfmt import fix_order_dashes, normalize_order_id, to_whatsapp
 from app.tools import ALL_TOOLS, set_context
 
 SYSTEM_PROMPT = """You are "ShopAssist", the WhatsApp customer service agent for a grocery store with MANY branches in different cities.
@@ -154,9 +154,9 @@ def _note_use(router_like, diag: dict) -> None:
 
 def _limited_body(text: str) -> str:
     """No model is available: code can still show an order the customer names by its ID."""
-    m = re.search(r"ORD-[A-Z0-9]{4,}", text.upper())
+    m = re.search(r"ORD[\s_\u2010-\u2015\u2212-]*[A-Z0-9]{6,}", text.upper())
     if m:
-        out = _tools.track_order.invoke({"order_id": m.group(0)})
+        out = _tools.track_order.invoke({"order_id": normalize_order_id(m.group(0))})
         if not out.startswith("No orders"):
             return "Here's what I can see:\n" + out
     return LIMITED_MODE_MESSAGE
@@ -300,6 +300,7 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
         last = msgs[-1]
         reply = last.content if hasattr(last, "content") else str(last)
         reply = reply if isinstance(reply, str) else str(reply)
+        reply = fix_order_dashes(reply)       # a look-alike hyphen would slip past the order-ID check
 
         leak = _extract_leaked_tool_call(reply)
         fake_order = (not leak and "track_order" not in tools_called
@@ -315,8 +316,18 @@ def _run_agent(phone: str, text: str, diag: dict) -> str | None:
         if (leak is None and not fake_order and not fake_action
                 and not db_mismatch and not branch_issue):
             body = to_whatsapp(reply.strip())
+            if not body and not lead:
+                # The model returned nothing (reasoning models sometimes do). Never show that
+                # to the customer: drop the empty message and ask once more.
+                diag["rejections"].append("empty_reply")
+                msgs = list(msgs)[:-1] + [
+                    {"role": "user", "content":
+                     "SYSTEM NOTICE: your last reply was empty. Answer the customer's last "
+                     "message in one or two short sentences, or ask one short question. "
+                     "Call a tool first if you need facts."}]
+                continue
             if not body:
-                body = "What would you like to order?" if lead else "[no reply]"
+                body = "What would you like to order?"
             final = shown(body)
             # Save only THIS attempt: earlier rejected attempts never reach history.
             session.set_history(_with_final_reply(turn_base + new_msgs, final))

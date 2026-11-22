@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from app import branches, db, orders
 from app.config import HUMAN_ESCALATION_WEBHOOK
 from app.session import get_session
-from app.textfmt import money as _money, wat as _wat   # shared formatting
+from app.textfmt import money as _money, normalize_order_id, wat as _wat   # shared formatting
 
 _phone_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("phone")
 
@@ -278,7 +278,7 @@ def _target_order(order_id: str, question: str):
     if not open_orders:
         return None, "You don't have any open reservations."
     if order_id:
-        wanted = order_id.strip().upper()
+        wanted = normalize_order_id(order_id)
         match = next((o for o in open_orders if o["order_id"] == wanted), None)
         if match:
             return match, None
@@ -342,7 +342,7 @@ def track_order(order_id: str = "") -> str:
     otherwise shows the customer's most recent orders."""
     phone = _phone()
     if order_id:
-        one = db.get_order_for_phone(order_id, phone)
+        one = db.get_order_for_phone(normalize_order_id(order_id), phone)
         rows = [one] if one else []
     else:
         rows = db.orders_for_phone(phone)

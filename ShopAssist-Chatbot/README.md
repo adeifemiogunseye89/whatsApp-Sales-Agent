@@ -66,7 +66,7 @@ uvicorn app.main:app --reload --port 8000
 On macOS or Linux use `cp .env.example .env`. The app reads `.env` itself; no `export` is needed.
 
 ## Tests
-Run each from the project folder. No Ollama, network or API keys are needed (models are faked).
+Run each from the project folder. No Ollama, network or API keys are needed (models are faked), and the suites ignore your private `.env` on purpose.
 In PowerShell use the `python` prefix and backslashes.
 
 | Command | Expected last line |
@@ -79,7 +79,8 @@ In PowerShell use the `python` prefix and backslashes.
 | `python tests\test_stage3_1.py` | `19/19 passed` |
 | `python tests\test_stage4.py` | `35/35 passed` |
 | `python tests\test_stage4_1.py` | `43/43 passed` |
-| `python tests\test_stage4_2.py` | `42/42 passed` (206 in total) |
+| `python tests\test_stage4_2.py` | `42/42 passed` |
+| `python tests\test_stage4_2_1.py` | `18/18 passed` (224 in total) |
 
 ## Layout
 | Path | Role |
@@ -97,7 +98,7 @@ In PowerShell use the `python` prefix and backslashes.
 | `app/diagnostics.py` | Per-turn record (metadata only) |
 | `app/textfmt.py`, `app/whatsapp.py`, `app/config.py` | Text helpers, Meta send client, settings |
 | `chat.py`, `check_lanes.py` | Terminal chat; lane health check |
-| `tests/` | Nine test suites (above) |
+| `tests/` | Ten test suites (above) |
 | `eval/test_queries.py` | Legacy canned-queries harness (needs a running model; not part of the suites) |
 
 ## Connect real WhatsApp (not yet hardened)

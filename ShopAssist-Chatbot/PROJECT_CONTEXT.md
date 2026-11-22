@@ -5,7 +5,7 @@
 > stage built, every decision (including reversals), every live-chat incident and its fix, what is
 > pending, and what is risky. If something here contradicts the code, the code wins; then fix this file.
 >
-> **Last updated:** 2026-11-21, after Stage 4.2 was delivered (patch built and verified, not yet applied by the owner).
+> **Last updated:** 2026-11-21, after Stage 4.2.1 (a fixes-only patch) was delivered. Stage 4.2 and the repo-hygiene commit are already pushed.
 > **Repo:** `adeifemiogunseye89/whatsApp-Sales-Agent`, project folder `ShopAssist-Chatbot/`.
 > **Keep this file alive:** after every stage, update sections 1, 6, 8, 9, 13 and the change log (section 17).
 
@@ -33,10 +33,10 @@ My latest `git log --oneline` and test results are below: <paste them>.
 
 - **What it is:** a WhatsApp bot, built as a **demo "gate pass"** to show malls and supermarkets in Nigeria a reserve-for-pickup service they could add. **No pilot shop exists yet.**
 - **What works today (all tested):** branch-aware catalogue; code-owned branch selection; code-owned quotes and reservations; hold and grace expiry with automatic release; 3 reservations per phone per rolling 24 hours; cancel and amend by YES/NO; human handoff; per-turn diagnostics; **model lanes** (hosted, backup, local), spend budget, abuse limits, limited mode; lane health check tool.
-- **Stages complete:** 1, 2, 2.5, 2.5.1, 3, 3.1, 4, 4.1 (pushed to GitHub). **Stage 4.2 is built and verified; the owner still has to apply it** (`stage4_2.patch`) and make the separate repo-hygiene commit.
-- **Tests:** 9 suites, **206 tests**, all passing on a fresh clone of the pushed repo with the 4.2 patch applied. 31 deliberate code breaks were each caught by the 4.2 tests (and earlier stages had their own mutation checks).
+- **Stages complete:** 1, 2, 2.5, 2.5.1, 3, 3.1, 4, 4.1, 4.2 and the repo-hygiene commit are **pushed**. **Stage 4.2.1 (fixes only) is built and verified; the owner still has to apply it** (`stage4_2_1.patch`).
+- **Tests:** 10 suites, **224 tests**, all passing on a fresh clone of the pushed repo with the 4.2.1 patch applied, **and** with a realistic private `.env` planted in the folder (tests are isolated from `.env` since 4.2.1). 31 deliberate breaks were caught in 4.2 and 17 in 4.2.1.
 - **Brain status:** the local model (qwen2.5:14b) takes **5 to 8 minutes per model turn** on the owner's CPU-only PC (2 GB GPU), so it is development-only. Hosted lanes answer in **0.8 to 2.8 seconds**. Live-tested on Groq's free tier with `openai/gpt-oss-120b`: worked well, but the free tier allows only about 1 to 2 customer messages a minute. His free Anthropic key has **no API credit**. A paid or higher-limit lane is needed for the demo.
-- **Next steps (owner decides):** apply hygiene commit and Stage 4.2; run the live chat script (section 14); then either **Stage 5** (CSV catalogue importer, per-shop settings, reserve alerts, preview mode) or a short **model comparison**. See section 13.
+- **Next steps (owner decides):** apply Stage 4.2.1; re-run the live chat script (section 14); then either **Stage 5** (CSV catalogue importer, per-shop settings, reserve alerts, preview mode) or a short **model comparison**. See section 13.
 
 ---
 
@@ -149,7 +149,7 @@ High-stakes = which branch, quotes, creating/cancelling/amending orders, money, 
 | `chat.py` | Dev terminal chat (`python -m chat`, `--quiet` hides developer lines) |
 | `check_lanes.py` | Lane health check (`python -m check_lanes [--models]`) |
 | `eval/test_queries.py` | **Legacy** canned-queries harness; needs a running model; not part of the suites |
-| `tests/test_stage*.py` | Nine suites (section 10) |
+| `tests/test_stage*.py` | Ten suites (section 10); every one sets `SHOPASSIST_NO_DOTENV=1` before importing the app |
 | `.env.example` / `.env` | Template (committed) vs your real private settings (never committed) |
 | `README.md`, `CUSTOMIZE.md`, `PROJECT_CONTEXT.md` | Overview, settings guide, this file |
 
@@ -162,10 +162,11 @@ Order statuses: `RESERVED`, `READY`, `COLLECTED`, `CANCELLED`, `EXPIRED` (the la
 Seed data in `db.py`: 3 branches (Lekki, Ikeja, both Lagos; Wuse, Abuja), 6 products, 15 inventory rows. In-place migration keeps older databases working.
 
 ### 5.4 Settings (all in `.env`; defaults in `app/config.py`; documented in `.env.example` and `CUSTOMIZE.md`)
-- **Business:** `DATABASE_PATH`, `CURRENCY`, `TAX_RATE=0`, `DELIVERY_FEE_KOBO=0`, `RESERVATION_HOURS=2` (owner changed it from 5 on 2026-11-21; whole hours only), `QUOTE_TTL_MINUTES=10`, `GRACE_MINUTES=30`, `DAILY_RESERVATION_LIMIT=3`, `SWEEP_MINUTES=5`, `LOG_DIR=logs`, `SESSION_TTL_HOURS=24`, `HANDOFF_HOURS=4`, `HISTORY_CAP=20`, `HUMAN_ESCALATION_WEBHOOK`.
+- **Business:** `DATABASE_PATH`, `CURRENCY`, `TAX_RATE=0`, `DELIVERY_FEE_KOBO=0`, `RESERVATION_HOURS=2` (owner changed it from 5 on 2026-11-21; whole hours only; the code default and `.env.example` are 2 since 4.2.1), `QUOTE_TTL_MINUTES=10`, `GRACE_MINUTES=30`, `DAILY_RESERVATION_LIMIT=3`, `SWEEP_MINUTES=5`, `LOG_DIR=logs`, `SESSION_TTL_HOURS=24`, `HANDOFF_HOURS=4`, `HISTORY_CAP=20`, `HUMAN_ESCALATION_WEBHOOK`.
 - **WhatsApp:** `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `META_API_VERSION`.
 - **Local model:** `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default `llama3.1:8b`), `OLLAMA_NUM_CTX=6144`, `OLLAMA_KEEP_ALIVE=1h`, `LLM_WARM_UP` (off).
 - **Brain lanes:** `LLM_PRIMARY`, `LLM_BACKUP`, `LLM_LOCAL` (default `ollama:<OLLAMA_MODEL>`; empty switches the local lane off), keys `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `CEREBRAS_API_KEY`, optional `LLM_PRICE_<SLOT>=input,output` (USD per million tokens).
+- **Test isolation:** `SHOPASSIST_NO_DOTENV=1` makes `config.py` skip `.env`. The suites set it; never set it in production.
 - **Guards:** `DAILY_BUDGET_USD=0.50` (0 = no cap), `BUDGET_ALERT_PERCENT=80`, `MODEL_TURNS_PER_HOUR=30`, `MAX_MESSAGE_CHARS=600`, `LLM_TIMEOUT_HOSTED=20`, `LLM_TIMEOUT_LOCAL=300`, `LLM_MAX_OUTPUT_TOKENS=300`, `LIMITED_MODE_MESSAGE`.
 
 ---
@@ -184,9 +185,10 @@ Seed data in `db.py`: 3 branches (Lekki, Ikeja, both Lagos; Wuse, Abuja), 6 prod
 | 4 | `7959fce` (Oct 31) | Hold (5 h by default then; **2 h since 2026-11-21**) plus 30 min grace, then release (`release_at`, background sweeper); **3 reservations per phone per rolling 24 h** (cancelled and expired ones still count; the slot is never returned); `cancel_order` and `amend_order` (code-confirmed YES; amend edits in place keeping id, code and hold clock, and uses no extra slot); open reservations in the state note; per-turn diagnostics; in-place DB migration. 35 tests, 17 mutation breaks caught |
 | docs | `18f59fc` (Nov 3) | CUSTOMIZE.md matched to Stage 4 |
 | 4.1 | `fac8b4c` (Nov 14) | **Model lanes** (primary, backup, local), timeouts, retry, circuit breaker, spend budget in micro-dollars, operator alerts once a day, per-phone turn limit, message length cap, **limited mode**, branch named once, local-lane tuning (context, keep-alive), `chat --quiet`. 43 tests, 24 breaks caught |
-| 4.2 | **delivered 2026-11-21, owner to apply** | Rate limits never mistaken for billing, provider wait honoured, snapshot/restore of failed turns, **grounded `set_pickup_location`**, lane list pick by "2", `check_lanes` tool, lanes loaded at start, failed attempts timed, docs fixed. 42 tests, 31 breaks caught. Patch also fixes a stray `cl` on line 1 of `tests/test_stage3_1.py` |
+| 4.2 | `028f301` (Nov 21; hygiene `09f3329`, docs `8fac66d`, check_lanes path fix `694cbe7`) | Rate limits never mistaken for billing, provider wait honoured, snapshot/restore of failed turns, **grounded `set_pickup_location`**, lane list pick by "2", `check_lanes` tool, lanes loaded at start, failed attempts timed, docs fixed. 42 tests, 31 breaks caught. Patch also fixes a stray `cl` on line 1 of `tests/test_stage3_1.py` |
+| 4.2.1 | **delivered 2026-11-21, owner to apply** | Fixes found by running 4.2 on the owner's machine: **tests isolated from the private `.env`** (`SHOPASSIST_NO_DOTENV`; 3 failures there, 7 more in 4.1); **empty model reply retried, never shown** (the literal text `[no reply]` used to reach customers); **look-alike hyphens in order IDs** normalised in tools, limited mode and before the reality check (closes a loophole: an invented ID written with a non-breaking hyphen bypassed the check); clear message for a bad number in `.env`; "1 hour" wording; code default and template hold = 2 h. 18 tests, 17 breaks caught |
 
-Commit messages for every stage are in `outputs/commits/` (`0_combined...` through `11_stage4_2_commit.txt`).
+Commit messages for every stage are in `outputs/commits/` (`0_combined...` through `14_stage4_2_1_commit.txt`).
 
 ---
 
@@ -242,7 +244,14 @@ On Groq `gpt-oss-120b`: model times 0.8 to 2.8 s (first call after restart 9 s b
 | 12 | A failed turn left `proposed=BR-LKI` nobody saw | Tools had already run before the model call failed | 4.2: snapshot/restore |
 | 13 | 9 s first message; 19 to 60 s on failed first turns | Provider packages and graph built on the customer's time | 4.2: `prepare()` at start |
 | 14 | Pushed repo contained `shop.db-shm` / `shop.db-wal`, a `requirements` file without `.txt`, and a stray `cl` on line 1 of `tests/test_stage3_1.py` | `git add -A` swept up working files and an accidental keystroke | Hygiene commit and 4.2 patch (owner to apply). No secrets found in any commit |
-| 15 | Amend and cancel after a reservation exists never seen on a live hosted model | Not yet run | Pending (section 14) |
+| 15 | Amend and cancel after a reservation exists never seen on a live hosted model | Not yet run | **Seen working** on gpt-oss-120b (2026-11-21): amend added 3 palm oil, same code, correct totals |
+| 16 | Stage 4.2 showed 3 test failures on the owner's PC (4.1 would show 7) | Tests read his private `.env` (price `0,0`, real Groq lane, no local lane); one subprocess test made a real Groq call | 4.2.1: `SHOPASSIST_NO_DOTENV`, every suite isolated, a test that plants a `.env` and re-runs suites |
+| 17 | A customer-facing reply was literally `[no reply]` after "yes i need help with groceries" | `agent.py` used it when the model returned empty text (reasoning models can; `LLM_MAX_OUTPUT_TOKENS=300` may be consumed by hidden reasoning) | 4.2.1: empty reply is retried (`rejected=empty_reply`), friendly fallback after 4 tries. Consider raising `LLM_MAX_OUTPUT_TOKENS` to about 800 for reasoning models |
+| 18 | The model wrote order IDs with a non-breaking hyphen (U+2011); lookups with it found nothing, and an invented ID written that way bypassed the order check | The check and the tools expected a plain hyphen | 4.2.1: normalise in tools, limited mode and before the check |
+| 19 | `RESERVATION_HOURS=1.5` stopped start-up with a bare ValueError; quote said "1 hours"; pushed `config.py` and `.env.example` still said 5 after the owner chose 2 | Plain `int()` parsing; defaults not synced | 4.2.1: clear error message, `hours_phrase`, defaults 2 |
+| 20 | "do you have maggic cube" answered as "magic cube"; "red oil" worked once and failed once for Palm Oil; the model asked to confirm instead of preparing the amendment | Search is keyword-only and model-driven; no synonyms or fuzzy matching | **Open**: Stage 5 (importer `aliases` column, fuzzy and synonym search done in code) |
+| 21 | "ok thanks" cost a model call and the model restated the pickup code and total (correct, but unnecessary risk) | No fast path for pleasantries | **Open**: code fast path for thanks, ok, bye |
+| 22 | The bot treated "clear" as maybe cancelling the reservation and asked first | Safe behaviour; the dev chat command is `reset` | None needed |
 
 Earlier model comparisons: qwen2.5:14b (original dev model, picked tools reasonably but too slow), llama3.1:8b, qwen3:14b and gpt-oss:20b exist locally but are too heavy for the CPU-only machine.
 
@@ -255,6 +264,8 @@ Earlier model comparisons: qwen2.5:14b (original dev model, picked tools reasona
 | Code owns branch, quote, orders, expiry, limits | Small models lie and drift | Letting the model confirm or create orders (Stages 1 to 2 era) |
 | Customer YES/NO is parsed by code | Reliable, testable | Asking the model to interpret confirmations |
 | Reservations: hold + 30 min grace; 3 per rolling 24 h; cancelled and expired still count | Prevents hoarding stock | Returning the slot on cancel |
+| **Tests never read the developer's `.env`** (2026-11-21) | A private `.env` changed results and let a test call a real provider | Trusting developers to keep `.env` clean |
+| **Normalise model output before safety checks** (2026-11-21) | A look-alike character defeated a reality check | Making each check Unicode-aware separately |
 | **Hold shortened from 5 h to 2 h** (owner, 2026-11-21; stock is really locked 2.5 h with the grace) | Cut the window a competitor could use to lock stock by about 55% per reservation (5.5 h to 2.5 h), and return unsold stock faster | Keeping 5 h. Concerns raised: Lagos traffic and after-work collection; expired reservations still burn one of the 3 daily slots; no cap on quantity per reservation (one reservation can lock all of an item: 12 of 12 was reserved in a live chat) |
 | Amend edits the order in place (same id, code, hold clock, no extra slot) | Customer-friendly and abuse-safe | Cancel and re-reserve |
 | Money in integer kobo; spend in integer micro-dollars | No float errors | Floats |
@@ -285,11 +296,13 @@ python tests\test_stage3.py     # 22
 python tests\test_stage3_1.py   # 19
 python tests\test_stage4.py     # 35
 python tests\test_stage4_1.py   # 43
-python tests\test_stage4_2.py   # 42   -> total 206
+python tests\test_stage4_2.py   # 42
+python tests\test_stage4_2_1.py # 18   -> total 224
 ```
 - No Ollama, no network, no keys needed: models are faked (`FakeAgent` / fake graphs). Each suite prints `N/N passed` on its last line.
 - Tests are organised as **NEEDS** (what the stage must achieve) with named tests per need; a docstring at the top of each suite lists them.
-- **Mutation testing:** after writing tests, break the code on purpose (one change at a time on a copy) and confirm a test fails. Weak tests found this way are fixed. Stage 4.2: 31 of 31 caught.
+- **Mutation testing:** after writing tests, break the code on purpose (one change at a time on a copy) and confirm a test fails. Weak tests found this way are fixed. Stage 4.2: 31 of 31 caught; Stage 4.2.1: 17 of 17.
+- **Isolation rule:** every suite sets `SHOPASSIST_NO_DOTENV=1` before importing the app, so the developer's `.env` (real keys, own lanes, prices, limits) cannot change a result or trigger a real network call. `test_stage4_2_1.py` checks every suite does this and re-runs four suites against a planted `.env`.
 - **Delivery check:** clone the owner's pushed repo fresh, apply the patch, run all nine suites. Build patches with `git add -A` then `git diff --cached --binary` (plain `git diff` silently omits new files; this once dropped two files).
 - Real providers are never called by tests. `python -m check_lanes` is the manual real-call check. It was run once against Anthropic's real server with a fake key and correctly reported an auth failure.
 - `tools/verify_project.py` (in outputs, not the repo) compared his files to the **Stage 4** reference; it is stale for later stages.
@@ -321,17 +334,18 @@ python tests\test_stage4_2.py   # 42   -> total 206
 ## 13. Roadmap and open decisions
 
 **Owner actions pending (do these before new feature work):**
-1. Hygiene commit (untrack `shop.db-shm`/`shop.db-wal`, rename `requirements` to `requirements.txt`, update `.gitignore`).
-2. Apply `stage4_2.patch`, run all suites (expect 206), commit with `11_stage4_2_commit.txt`.
-3. Replace `README.md` and add `PROJECT_CONTEXT.md` (this documentation update).
-4. Run the live chat script (section 14) on the hosted lane; send the transcript and 3 lines of `logs\turns.jsonl`.
+1. (Done) hygiene commit, Stage 4.2, docs, hold decision.
+2. Apply `stage4_2_1.patch` (`git status` first; discard any local-only edit to `config.py`), run all ten suites (expect 224), commit with `14_stage4_2_1_commit.txt`; refresh the three docs.
+3. Re-run the live chat script (section 14); send the transcript and 3 lines of `logs\turns.jsonl`. Watch for `rejected=empty_reply`.
+4. Decide the hold length question (section 9) and whether to add a per-reservation quantity cap.
 5. Choose the demo lane: buy small Anthropic credit (or another paid tier). Free Groq is dev-only.
 
 **Proposed order after that (he decides):**
-- **Stage 5:** CSV catalogue importer (dry-run, all-or-nothing, row-level errors, Excel quirks, respects open holds, includes `pay_now_eligible`; later URL or Google-Sheet source, then a per-shop adapter); **per-shop settings** (pay-now mode Off/Preview/Sandbox, ordered alert phone list, timers); **reserve alert** to the branch's primary phone via template; customer notice line.
+- **Stage 5:** CSV catalogue importer (dry-run, all-or-nothing, row-level errors, Excel quirks, respects open holds, includes `pay_now_eligible` **and an `aliases` column** so "red oil", "maggi", "garri" and common typos find the right product; search by name, aliases and fuzzy match is done **in code**, not left to the model; later URL or Google-Sheet source, then a per-shop adapter); **per-shop settings** (pay-now mode Off/Preview/Sandbox, ordered alert phone list, timers); **reserve alert** to the branch's primary phone via template; customer notice line.
 - **Stage 5b:** Preview choice screen (Pay now / Reserve).
 - **Stage 6:** webhook hardening (Meta signature check, duplicate message handling, voice notes and media), **numbers guard** (every ₦ and stock figure in a reply must appear in a tool result), concurrency (the server currently blocks the event loop during a model call).
 - **A short model comparison** (same 30 scripted chats on the local 8B, a hosted small model, a second vendor; score first-try tool accuracy, rejections, speed, cost per order).
+- **Small candidates:** code fast path for thanks/ok/bye; per-reservation quantity or value cap; extend-once for late customers.
 - **Later:** sandbox pay now, pack-alert buttons, refunds, terms, staff-side actions (mark READY/COLLECTED, cancel), code fast paths for greetings/thanks, prompt diet if needed, Redis/Postgres swap.
 - **Four pay-now numbers to re-confirm at Stage 5 start:** 10 per 24 h, 20-minute unpaid window, 5-minute re-alert, 3-day uncollected refund.
 
@@ -389,3 +403,4 @@ Send back: the transcript with the `[turn: ...]` lines and 3 lines of `logs\turn
 ## 17. Change log of this file
 - 2026-11-21: first full version, written after Stage 4.2 delivery (covers Stages 1 to 4.2, brain lanes, live-chat findings, decisions, roadmap, risks).
 - 2026-11-21: reservation hold changed from 5 h to 2 h by the owner (config.py and .env); decision, risks and settings entry updated.
+- 2026-11-21: Stage 4.2.1 added (isolated tests, empty-reply retry, look-alike order-ID hyphens, setting errors); findings 16 to 22; Stage 4.2 and hygiene marked pushed; roadmap gains aliases/fuzzy search.

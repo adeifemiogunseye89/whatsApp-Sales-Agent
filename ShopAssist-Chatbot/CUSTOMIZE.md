@@ -73,7 +73,8 @@ Run from the `ShopAssist-Chatbot` folder. None of them needs Ollama or WhatsApp.
 | `python tests/test_stage3_1.py` | `19/19 passed` |
 | `python tests/test_stage4.py` | `35/35 passed` |
 | `python tests/test_stage4_1.py` | `43/43 passed` |
-| `python tests/test_stage4_2.py` | see the Stage 4.2 note (the count is printed on the last line) |
+| `python tests/test_stage4_2.py` | `42/42 passed` |
+| `python tests/test_stage4_2_1.py` | `18/18 passed` (the suites ignore your private `.env` on purpose) |
 
 ## 7. Eval suite: `eval/test_queries.py`
 Replace `QUERIES` with your real customer phrases; add assertions on tool calls and response text to turn it into a regression suite.

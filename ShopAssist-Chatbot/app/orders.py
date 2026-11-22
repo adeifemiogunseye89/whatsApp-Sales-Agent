@@ -17,7 +17,7 @@ from app import db
 from app import session as _session
 from app.config import (DAILY_RESERVATION_LIMIT, GRACE_MINUTES, QUOTE_TTL_MINUTES,
                         RESERVATION_HOURS)
-from app.textfmt import money, wat
+from app.textfmt import hours_phrase, money, wat
 
 
 # ---------- reading the customer's answer ----------
@@ -79,7 +79,7 @@ def quote_text(branch, quote: dict, left: int | None = None, open_note: str | No
               f"Pickup: {branch['address']}"]
     if open_note:
         lines.append(open_note)
-    lines += ["", f"Reply *YES* to reserve this for pickup (held {RESERVATION_HOURS} hours) "
+    lines += ["", f"Reply *YES* to reserve this for pickup (held {hours_phrase(RESERVATION_HOURS)}) "
                   f"or *NO* to cancel. This quote is valid for {QUOTE_TTL_MINUTES} minutes."]
     if left is not None:
         lines.append(f"This uses 1 of your {DAILY_RESERVATION_LIMIT} reservations per 24 hours "
