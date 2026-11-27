@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ["SHOPASSIST_NO_DOTENV"] = "1"   # tests never read your private .env
 os.environ["DATABASE_PATH"] = os.path.join(tempfile.mkdtemp(), "test_shop2.db")
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402

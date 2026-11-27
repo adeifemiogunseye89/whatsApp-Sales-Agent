@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # Must be set BEFORE importing app.* (config reads env at import time).
 _TMP = tempfile.mkdtemp()
+os.environ["SHOPASSIST_NO_DOTENV"] = "1"   # tests never read your private .env
 os.environ["DATABASE_PATH"] = os.path.join(_TMP, "test_shop.db")
 
 from app import db, orders, tools              # noqa: E402

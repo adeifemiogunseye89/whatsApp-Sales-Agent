@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 _TMP = tempfile.mkdtemp()
+os.environ["SHOPASSIST_NO_DOTENV"] = "1"   # tests never read your private .env
 os.environ["DATABASE_PATH"] = os.path.join(_TMP, "test_shop4.db")
 os.environ["LOG_DIR"] = os.path.join(_TMP, "logs")
 
